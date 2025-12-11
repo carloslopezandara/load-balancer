@@ -8,6 +8,7 @@ mod admin;
 mod decision;
 mod error;
 mod metrics;
+mod request_context;
 mod strategy;
 mod worker;
 
@@ -16,6 +17,7 @@ pub use admin::{ChangeStrategyRequest, ChangeStrategyResponse, StrategyResponse,
 pub use decision::{Decision, DecisionThresholds, SwitchReason};
 pub use error::LoadBalancerError;
 pub use metrics::WorkerMetrics;
+pub use request_context::RequestContext;
 pub use strategy::StrategyType;
 pub use worker::{WorkerHealthResponse, WorkerResponse, WorkerUrl};
 

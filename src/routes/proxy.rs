@@ -10,7 +10,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use http_body_util::BodyExt;
 use std::{str::FromStr, sync::Arc, time::Instant};
-use crate::domain::{LoadBalancerError, Result};
+use crate::domain::{LoadBalancerError, RequestContext, Result};
 use crate::services::LoadBalancerService;
 use crate::ResponseBody;
 
@@ -47,9 +47,28 @@ impl ProxyRoutes {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<ResponseBody>> {
+        let ctx = RequestContext::new(
+            req.method().to_string(),
+            req.uri().path().to_string(),
+        );
+        
+        tracing::info!(
+            request_id = %ctx.request_id,
+            method = %ctx.method,
+            path = %ctx.path,
+            "Processing request"
+        );
+        
         let start = Instant::now();
         
         let (worker_index, worker_url) = self.load_balancer_service.select_worker().await?;
+        
+        tracing::debug!(
+            request_id = %ctx.request_id,
+            worker_index = worker_index,
+            worker_url = %worker_url.as_str(),
+            "Selected worker"
+        );
 
         self.load_balancer_service.connection_started(worker_index).await;
 
@@ -86,10 +105,26 @@ impl ProxyRoutes {
                     self.load_balancer_service
                         .metrics_collector()
                         .record_success(worker_index, duration);
+                    
+                    tracing::info!(
+                        request_id = %ctx.request_id,
+                        worker_index = worker_index,
+                        status = response.status().as_u16(),
+                        duration_ms = duration.as_millis(),
+                        "Request completed successfully"
+                    );
                 } else {
                     self.load_balancer_service
                         .metrics_collector()
                         .record_error(worker_index, duration);
+                    
+                    tracing::warn!(
+                        request_id = %ctx.request_id,
+                        worker_index = worker_index,
+                        status = response.status().as_u16(),
+                        duration_ms = duration.as_millis(),
+                        "Request failed"
+                    );
                 }
                 
                 let (parts, body) = response.into_parts();
@@ -100,6 +135,15 @@ impl ProxyRoutes {
                 self.load_balancer_service
                     .metrics_collector()
                     .record_error(worker_index, duration);
+                
+                tracing::error!(
+                    request_id = %ctx.request_id,
+                    worker_index = worker_index,
+                    worker_url = %worker_uri,
+                    duration_ms = duration.as_millis(),
+                    error = %e,
+                    "Request failed"
+                );
                 
                 Err(LoadBalancerError::http_client(&worker_uri, e))
             }

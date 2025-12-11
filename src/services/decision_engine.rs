@@ -72,12 +72,16 @@ impl DecisionEngine {
             return Ok(Decision::KeepCurrent);
         }
 
+        let current = self.current_strategy()?;
+
         if !self.can_switch()? {
-            tracing::debug!("Switch cooldown active, keeping current strategy");
+            tracing::debug!(
+                current_strategy = %current.as_str(),
+                cooldown_seconds = self.switch_cooldown.as_secs(),
+                "Switch cooldown active"
+            );
             return Ok(Decision::KeepCurrent);
         }
-
-        let current = self.current_strategy()?;
 
         // Calculate aggregate metrics across all workers
         let mut total_requests = 0u64;
@@ -109,7 +113,11 @@ impl DecisionEngine {
 
         // Not enough data to make a decision
         if total_requests < self.thresholds.min_samples {
-            tracing::debug!("Insufficient samples ({}) for decision", total_requests);
+            tracing::debug!(
+                total_requests = total_requests,
+                min_samples = self.thresholds.min_samples,
+                "Insufficient samples for decision"
+            );
             return Ok(Decision::KeepCurrent);
         }
 
@@ -119,8 +127,12 @@ impl DecisionEngine {
         // High latency detected - switch to LeastConnections
         if high_latency_count >= majority_threshold && current != StrategyType::LeastConnections {
             tracing::info!(
-                "High latency detected on {} workers, recommending switch to LeastConnections",
-                high_latency_count
+                high_latency_count = high_latency_count,
+                worker_count = worker_count,
+                threshold_ms = self.thresholds.high_latency_ms,
+                current_strategy = %current.as_str(),
+                new_strategy = "least_connections",
+                "High latency detected, switching strategy"
             );
             return Ok(Decision::SwitchTo {
                 strategy: StrategyType::LeastConnections,
@@ -131,8 +143,12 @@ impl DecisionEngine {
         // High error rate detected - switch to RoundRobin for fair distribution
         if high_error_rate_count >= majority_threshold && current != StrategyType::RoundRobin {
             tracing::info!(
-                "High error rate detected on {} workers, recommending switch to RoundRobin",
-                high_error_rate_count
+                high_error_rate_count = high_error_rate_count,
+                worker_count = worker_count,
+                threshold_rate = self.thresholds.high_error_rate,
+                current_strategy = %current.as_str(),
+                new_strategy = "round_robin",
+                "High error rate detected, switching strategy"
             );
             return Ok(Decision::SwitchTo {
                 strategy: StrategyType::RoundRobin,
@@ -157,9 +173,9 @@ impl DecisionEngine {
             *last_switch = Some(Instant::now());
 
             tracing::info!(
-                "Strategy switched to {} due to {:?}",
-                strategy.as_str(),
-                reason
+                new_strategy = %strategy.as_str(),
+                reason = ?reason,
+                "Strategy switch applied"
             );
         }
         Ok(())

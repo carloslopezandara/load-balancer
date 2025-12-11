@@ -174,9 +174,10 @@ impl LoadBalancerService {
             engine.apply_decision(&decision)?;
 
             tracing::info!(
-                "Adaptive load balancing: switched to {} due to {:?}",
-                strategy.as_str(),
-                reason
+                new_strategy = %strategy.as_str(),
+                reason = ?reason,
+                worker_count = self.worker_hosts.len(),
+                "Adaptive load balancing strategy switched"
             );
         }
 
