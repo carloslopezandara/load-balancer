@@ -131,20 +131,21 @@ async fn main() -> Result<()> {
     info!("🔄 Current strategy: {}", load_balancer_service.get_strategy_name().await);
 
     // Create shutdown coordinator
-    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new(config.server.shutdown_timeout_seconds));
+    let shutdown_coordinator = Arc::new(
+        ShutdownCoordinator::new(config.server.shutdown_timeout_seconds)
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to create shutdown coordinator: {}", e))?
+    );
     let shutdown_coordinator_clone = shutdown_coordinator.clone();
 
     // Spawn signal handler task
     task::spawn(async move {
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Received SIGINT (Ctrl+C), initiating graceful shutdown");
-                shutdown_coordinator_clone.shutdown();
-            }
-            Err(e) => {
-                error!("Failed to listen for shutdown signal: {}", e);
-            }
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to listen for shutdown signal: {}", e);
+            return;
         }
+        
+        info!("Received SIGINT (Ctrl+C), initiating graceful shutdown");
+        shutdown_coordinator_clone.shutdown();
     });
 
     // Main server loop
