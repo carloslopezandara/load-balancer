@@ -1,90 +1,128 @@
-/// HTTP Utility Functions for Admin API
-/// 
-/// This module provides reusable functions for creating consistent HTTP responses
-/// across all admin endpoints.
+/// HTTP Utility Functions
 
-use hyper::{Response, StatusCode};
-use hyper::body::Bytes;
+use hyper::{Response, StatusCode, Request};
+use hyper::header::CONTENT_TYPE;
+use hyper::body::Incoming;
+use serde::{Serialize, de::DeserializeOwned};
 use http_body_util::{Full, BodyExt};
-use serde::Serialize;
+use hyper::body::Bytes;
 
+use crate::domain::{LoadBalancerError, Result};
 use crate::ResponseBody;
-use super::models::ErrorResponse;
+use super::constants::headers;
 
-/// Creates a standardized JSON error response
+/// Parse JSON body from HTTP request
 /// 
-/// This function builds consistent error responses across all admin endpoints
-/// with appropriate HTTP status codes and detailed error information.
+/// This function handles all the steps of extracting and parsing a JSON body:
+/// 1. Collects the body bytes from the request
+/// 2. Converts to UTF-8 string
+/// 3. Parses JSON into the target type
 /// 
-/// # Arguments
-/// * `status` - HTTP status code for the error (e.g., BAD_REQUEST, NOT_FOUND)
-/// * `error_msg` - Brief error message
-/// * `details` - Optional detailed error information for debugging
+/// All errors are properly logged and converted to LoadBalancerError.
 /// 
-/// # Returns
-/// * Complete HTTP response with JSON error body
+/// # Type Parameters
 /// 
-/// # Example
-/// ```rust
-/// let response = create_error_response(
-///     StatusCode::BAD_REQUEST,
-///     "Invalid JSON format", 
-///     Some("JSON parse error: missing field")
-/// );
+/// * `T` - The type to deserialize the JSON into (must implement DeserializeOwned)
+/// 
+/// # Examples
+/// 
+/// ```ignore
+/// let request_data: ChangeStrategyRequest = parse_json_body(req).await?;
 /// ```
-pub fn create_error_response(
-    status: StatusCode, 
-    error_msg: &str, 
-    details: Option<&str>
-) -> Response<ResponseBody> {
-    let error_response = ErrorResponse {
-        error: error_msg.to_string(),
-        details: details.map(|d| d.to_string()),
-    };
-    
-    let json = serde_json::to_string(&error_response)
-        .unwrap_or_else(|_| r#"{"error": "Internal serialization error"}"#.to_string());
-    
-    let body = Full::new(Bytes::from(json))
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        .boxed();
-        
-    Response::builder()
-        .status(status)
-        .header("content-type", "application/json")
-        .body(body)
-        .expect("Failed to build error response")
+pub async fn parse_json_body<T: DeserializeOwned>(
+    req: Request<Incoming>
+) -> Result<T> {
+    let body_bytes = http_body_util::BodyExt::collect(req.into_body()).await
+        .map_err(|e| {
+            let error = LoadBalancerError::from(e);
+            tracing::error!("Failed to read request body: {}", error);
+            error
+        })?
+        .to_bytes();
+
+    let body_str = String::from_utf8(body_bytes.to_vec())
+        .map_err(|e| {
+            let error = LoadBalancerError::from(e);
+            tracing::warn!("Invalid UTF-8 in request body: {}", error);
+            error
+        })?;
+
+    serde_json::from_str(&body_str)
+        .map_err(|e| {
+            let error = LoadBalancerError::from(e);
+            tracing::warn!("Invalid JSON format: {}", error);
+            error
+        })
 }
 
-/// Creates a standardized JSON success response
-/// 
-/// This function serializes any serializable data structure into a JSON response
-/// with appropriate headers and status codes.
-/// 
-/// # Arguments
-/// * `data` - Any data structure that implements Serialize
-/// 
-/// # Returns
-/// * Complete HTTP response with JSON body and 200 OK status
-/// 
-/// # Example
-/// ```rust
-/// let response_data = StrategyResponse {
-///     current_strategy: "round_robin".to_string()
-/// };
-/// let response = create_json_response(&response_data);
-/// ```
-pub fn create_json_response<T: Serialize>(data: &T) -> Response<ResponseBody> {
+/// Create error response from LoadBalancerError 
+pub fn create_error_response(error: &LoadBalancerError) -> Response<ResponseBody> {
+    let error_response = serde_json::json!({
+        "error": error.status_code().canonical_reason().unwrap_or("Unknown Error"),
+        "message": error.user_message(),
+        "details": format!("{}", error),
+        "status": error.status_code().as_u16()
+    });
+
+    create_json_response_with_status(&error_response, error.status_code())
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to serialize error response: {}", e);
+            create_fallback_error_response()
+        })
+}
+
+/// Create JSON response with status
+pub fn create_json_response_with_status<T: Serialize>(
+    data: &T, 
+    status: StatusCode
+) -> Result<Response<ResponseBody>> {
     let json = serde_json::to_string(data)
-        .unwrap_or_else(|_| r#"{"error": "Internal serialization error"}"#.to_string());
-    
+        .map_err(|e| LoadBalancerError::json_parsing("response serialization", e))?;
+
     let body = Full::new(Bytes::from(json))
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         .boxed();
-        
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
+
+    let response = Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, headers::APPLICATION_JSON)
         .body(body)
-        .expect("Failed to build JSON response")
+        .map_err(|e| LoadBalancerError::internal(format!("Failed to build HTTP response: {}", e)))?;
+
+    Ok(response)
+}
+
+/// Simple fallback error response that never panics
+pub fn create_fallback_error_response() -> Response<ResponseBody> {
+    // Try to create a nice JSON response first
+    let json_body = r#"{"error":"Internal server error","message":"An unexpected error occurred"}"#;
+    let body = Full::new(Bytes::from(json_body))
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed();
+    
+    // Try with JSON content-type header
+    if let Ok(response) = Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header(CONTENT_TYPE, headers::APPLICATION_JSON)
+        .body(body) {
+        return response;
+    }
+    
+    // If that fails, try without custom headers
+    let simple_body = Full::new(Bytes::from("Internal server error"))
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed();
+    
+    if let Ok(response) = Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .body(simple_body) {
+        tracing::warn!("Fallback response created without JSON headers");
+        return response;
+    }
+    
+    // Absolute last resort - basic response with default status
+    tracing::error!("CRITICAL: Cannot create normal HTTP response, using minimal fallback");
+    Response::new(Full::new(Bytes::from("Error"))
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed())
 }

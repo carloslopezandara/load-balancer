@@ -1,23 +1,22 @@
 /// Load Balancer Library
 
-/// Core load balancer functionality
-pub mod load_balancer;
+/// Domain models and error types  
+pub mod domain;
 
-/// Load balancing strategy implementations  
-pub mod strategy;
+/// Load balancing strategy implementations
+pub mod load_balancing_strategy;
 
-/// Administrative API for runtime management
-pub mod admin;
+/// HTTP routes layer - handles request routing
+pub mod routes;
+
+/// Business logic services layer
+pub mod services;
 
 /// Shared utility functions
 pub mod utils;
 
-// Re-export HTTP utilities for use across the entire codebase
-pub use utils::http_utils;
-
-/// Re-export main types for convenient access
-pub use load_balancer::LoadBalancer;
-pub use strategy::LoadBalancingStrategy;
+// Re-export domain types for convenient access
+pub use domain::{LoadBalancerError, Result, StrategyType, ChangeStrategyRequest, StrategyResponse, WorkerHealthResponse};
 
 /// Type alias for HTTP response bodies used throughout the load balancer
 pub type ResponseBody = http_body_util::combinators::BoxBody<

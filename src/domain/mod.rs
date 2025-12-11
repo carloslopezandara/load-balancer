@@ -1,0 +1,19 @@
+/// Domain Module
+/// 
+/// Central domain models and types for the load balancer.
+/// Following auth-service pattern: explicit mod declarations + pub use re-exports.
+
+// Module declarations
+mod admin;
+mod error;
+mod strategy;
+mod worker;
+
+// Re-export all public types for convenience
+pub use admin::{ChangeStrategyRequest, ChangeStrategyResponse, StrategyResponse};
+pub use error::LoadBalancerError;
+pub use strategy::StrategyType;
+pub use worker::{WorkerHealthResponse, WorkerResponse, WorkerUrl};
+
+/// Domain Result type alias for convenience
+pub type Result<T> = std::result::Result<T, LoadBalancerError>;
