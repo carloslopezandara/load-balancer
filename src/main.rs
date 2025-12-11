@@ -7,13 +7,13 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use hyper::{body::Incoming, service::service_fn, Request, Response};
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo};
-use tokio::{net::TcpListener, task};
+use tokio::{net::TcpListener, task, signal};
 use tracing::{error, info, warn};
 use color_eyre::Result;
 
 use load_balancer::load_balancing_strategy::LoadBalancingStrategy;
 use load_balancer::routes::Router;
-use load_balancer::services::LoadBalancerService;
+use load_balancer::services::{LoadBalancerService, ShutdownCoordinator};
 use load_balancer::domain::WorkerUrl;
 use load_balancer::ResponseBody;
 
@@ -130,30 +130,66 @@ async fn main() -> Result<()> {
     info!("📊 Admin API available at http://{}/admin/strategy", addr);
     info!("🔄 Current strategy: {}", load_balancer_service.get_strategy_name().await);
 
+    // Create shutdown coordinator
+    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new(config.server.shutdown_timeout_seconds));
+    let shutdown_coordinator_clone = shutdown_coordinator.clone();
+
+    // Spawn signal handler task
+    task::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received SIGINT (Ctrl+C), initiating graceful shutdown");
+                shutdown_coordinator_clone.shutdown();
+            }
+            Err(e) => {
+                error!("Failed to listen for shutdown signal: {}", e);
+            }
+        }
+    });
+
     // Main server loop
     loop {
-        let (stream, remote_addr) = match listener.accept().await {
-            Ok(connection) => connection,
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-                continue;
-            }
-        };
-        
-        let router = router.clone();
-
-        task::spawn(async move {
-            let io = TokioIo::new(stream);
-            let service = service_fn(move |req| {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, remote_addr) = match result {
+                    Ok(connection) => connection,
+                    Err(e) => {
+                        error!("Failed to accept connection: {}", e);
+                        continue;
+                    }
+                };
+                
                 let router = router.clone();
-                async move {
-                    handle(req, router).await
-                }
-            });
 
-            if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
-                warn!("Connection error from {}: {}", remote_addr, e);
+                task::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let service = service_fn(move |req| {
+                        let router = router.clone();
+                        async move {
+                            handle(req, router).await
+                        }
+                    });
+
+                    if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
+                        warn!("Connection error from {}: {}", remote_addr, e);
+                    }
+                });
             }
-        });
+            
+            _ = shutdown_coordinator.wait_for_shutdown() => {
+                info!("Shutdown signal received, stopping server");
+                break;
+            }
+        }
     }
+
+    info!(
+        timeout_seconds = config.server.shutdown_timeout_seconds,
+        "Waiting for connections to drain"
+    );
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    
+    info!("Server shutdown complete");
+    Ok(())
 }

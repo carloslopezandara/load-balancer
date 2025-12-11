@@ -68,6 +68,11 @@ pub struct ServerConfig {
     #[validate(length(min = 1))]
     pub strategy: String,
     
+    /// Graceful shutdown timeout in seconds
+    #[serde(default = "default_shutdown_timeout")]
+    #[validate(range(min = 1, max = 300))]
+    pub shutdown_timeout_seconds: u64,
+    
     /// Enable adaptive load balancing
     #[serde(default)]
     pub adaptive: bool,
@@ -119,6 +124,10 @@ impl Default for AdaptiveConfig {
             cooldown_seconds: 60,
         }
     }
+}
+
+fn default_shutdown_timeout() -> u64 {
+    30
 }
 
 /// Logging configuration
@@ -185,6 +194,7 @@ impl Config {
                 host: cli.host,
                 strategy: cli.strategy,
                 adaptive: false,
+                shutdown_timeout_seconds: default_shutdown_timeout(),
             },
             workers: WorkersConfig {
                 hosts: worker_hosts,
@@ -220,6 +230,7 @@ mod tests {
                 host: "0.0.0.0".to_string(),
                 strategy: "round_robin".to_string(),
                 adaptive: false,
+                shutdown_timeout_seconds: 30,
             },
             workers: WorkersConfig {
                 hosts: vec![

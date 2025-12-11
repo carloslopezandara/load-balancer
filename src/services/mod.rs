@@ -9,9 +9,11 @@ mod admin;
 mod decision_engine;
 mod load_balancer;
 mod metrics;
+mod shutdown;
 
 // Re-export service types
 pub use admin::AdminService;
 pub use decision_engine::DecisionEngine;
 pub use load_balancer::LoadBalancerService;
 pub use metrics::MetricsCollector;
+pub use shutdown::{ShutdownCoordinator, ShutdownSignal};

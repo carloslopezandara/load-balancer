@@ -3,6 +3,7 @@ host = "0.0.0.0"
 port = 1337
 strategy = "round_robin"
 adaptive = false
+shutdown_timeout_seconds = 30
 
 [[workers.hosts]]
 url = "http://localhost:3000"
