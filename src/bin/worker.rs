@@ -22,7 +22,7 @@ use load_balancer::domain::{WorkerHealthResponse, WorkerResponse};
 use load_balancer::{ResponseBody, LoadBalancerError};
 
 /// Worker server for load balancer testing
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Port number to listen on
@@ -32,6 +32,14 @@ struct Args {
     /// Host address to bind to
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
+
+    /// Artificial delay in milliseconds to add to each request (for testing adaptive behavior)
+    #[arg(long, default_value_t = 0)]
+    artificial_delay_ms: u64,
+
+    /// Artificial error rate (0.0 to 1.0) - percentage of requests that should fail (for testing adaptive behavior)
+    #[arg(long, default_value_t = 0.0)]
+    artificial_error_rate: f64,
 }
 
 /// Worker request handler that simulates different processing times
@@ -39,7 +47,26 @@ struct Args {
 /// This handler processes incoming HTTP requests and returns responses
 /// that identify which worker handled the request. Different endpoints
 /// simulate different processing times to test load balancing behavior.
-async fn worker_handler(req: Request<Incoming>, port: u16) -> Result<Response<ResponseBody>, LoadBalancerError> {
+async fn worker_handler(req: Request<Incoming>, args: &Args) -> Result<Response<ResponseBody>, LoadBalancerError> {
+    let port = args.port;
+    
+    // Apply artificial error rate if configured
+    if args.artificial_error_rate > 0.0 {
+        let random_value: f64 = rand::random();
+        if random_value < args.artificial_error_rate {
+            tracing::warn!("Worker {} artificially failing request (error rate: {})", port, args.artificial_error_rate);
+            return Err(LoadBalancerError::internal(format!(
+                "Worker artificial error (rate: {:.1}%)",
+                args.artificial_error_rate * 100.0
+            )));
+        }
+    }
+    
+    // Apply artificial delay if configured
+    if args.artificial_delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(args.artificial_delay_ms)).await;
+    }
+    
     let path = req.uri().path();
     match path {
         // Health check endpoint - returns JSON status
@@ -111,6 +138,14 @@ async fn main() {
     let addr = SocketAddr::from((host_ip, args.port));
     
     info!("🔧 Worker starting on http://{}", addr);
+    
+    // Log artificial behavior configuration if enabled
+    if args.artificial_delay_ms > 0 {
+        info!("⏱️  Artificial delay: {}ms per request", args.artificial_delay_ms);
+    }
+    if args.artificial_error_rate > 0.0 {
+        info!("❌ Artificial error rate: {:.1}%", args.artificial_error_rate * 100.0);
+    }
 
     // Bind to the specified address
     let listener = match TcpListener::bind(addr).await {
@@ -134,15 +169,18 @@ async fn main() {
         };
 
         // Spawn a task for each connection to handle it concurrently
-        let worker_port = args.port;
+        let worker_args = args.clone();
         task::spawn(async move {
             let io = TokioIo::new(stream);
-            let service = service_fn(move |req| async move {
-                worker_handler(req, worker_port).await
-                    .or_else(|e| {
-                        error!("Worker request error: {}", e);
-                        Ok::<_, Infallible>(e.into_response())
-                    })
+            let service = service_fn(move |req| {
+                let args_clone = worker_args.clone();
+                async move {
+                    worker_handler(req, &args_clone).await
+                        .or_else(|e| {
+                            error!("Worker request error: {}", e);
+                            Ok::<_, Infallible>(e.into_response())
+                        })
+                }
             });
             let builder = Builder::new(TokioExecutor::new());
 
