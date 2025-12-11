@@ -7,7 +7,9 @@
 // Module declarations (auth-service pattern)
 mod admin;
 mod load_balancer;
+mod metrics;
 
 // Re-export service types
 pub use admin::AdminService;
 pub use load_balancer::LoadBalancerService;
+pub use metrics::MetricsCollector;

@@ -6,12 +6,14 @@
 // Module declarations
 mod admin;
 mod error;
+mod metrics;
 mod strategy;
 mod worker;
 
 // Re-export all public types for convenience
 pub use admin::{ChangeStrategyRequest, ChangeStrategyResponse, StrategyResponse};
 pub use error::LoadBalancerError;
+pub use metrics::WorkerMetrics;
 pub use strategy::StrategyType;
 pub use worker::{WorkerHealthResponse, WorkerResponse, WorkerUrl};
 
