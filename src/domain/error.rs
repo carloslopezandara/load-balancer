@@ -75,6 +75,10 @@ pub enum LoadBalancerError {
     /// Configuration errors
     #[error("Configuration error: {message}")]
     Configuration { message: String },
+
+    /// Concurrency errors (lock acquisition failed)
+    #[error("Concurrency error: {context}")]
+    Concurrency { context: String },
 }
 
 /// Helper functions for creating specific error types
@@ -153,6 +157,13 @@ impl LoadBalancerError {
             message: message.into(),
         }
     }
+
+    /// Create a concurrency error
+    pub fn concurrency(context: impl Into<String>) -> Self {
+        Self::Concurrency {
+            context: context.into(),
+        }
+    }
 }
 
 /// Convert LoadBalancerError to appropriate HTTP status code
@@ -172,6 +183,7 @@ impl LoadBalancerError {
             LoadBalancerError::Utf8Conversion { .. } => StatusCode::BAD_REQUEST,
             LoadBalancerError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             LoadBalancerError::NotFound { .. } => StatusCode::NOT_FOUND,
+            LoadBalancerError::Concurrency { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             LoadBalancerError::Configuration { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -190,6 +202,7 @@ impl LoadBalancerError {
             LoadBalancerError::Internal { .. } => "Internal server error",
             LoadBalancerError::NotFound { .. } => "Resource not found",
             LoadBalancerError::Configuration { .. } => "Server configuration error",
+            LoadBalancerError::Concurrency { .. } => "Service temporarily unavailable",
         }
     }
 }
