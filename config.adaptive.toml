@@ -19,5 +19,11 @@ enabled = true
 url = "http://localhost:3003"
 enabled = true
 
+[adaptive]
+high_latency_ms = 500
+high_error_rate = 0.1
+min_samples = 10
+cooldown_seconds = 60
+
 [logging]
 level = "info"

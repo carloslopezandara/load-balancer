@@ -30,13 +30,17 @@ impl DecisionEngine {
         }
     }
 
-    /// Create new decision engine with custom thresholds
-    pub fn with_thresholds(initial_strategy: StrategyType, thresholds: DecisionThresholds) -> Self {
+    /// Create new decision engine with custom thresholds and cooldown
+    pub fn with_config(
+        initial_strategy: StrategyType,
+        thresholds: DecisionThresholds,
+        cooldown_seconds: u64,
+    ) -> Self {
         Self {
             thresholds,
             current_strategy: RwLock::new(initial_strategy),
             last_switch: RwLock::new(None),
-            switch_cooldown: Duration::from_secs(60),
+            switch_cooldown: Duration::from_secs(cooldown_seconds),
         }
     }
 
@@ -335,7 +339,7 @@ mod tests {
             high_error_rate: 0.0,
             min_samples: 1,
         };
-        let engine = DecisionEngine::with_thresholds(StrategyType::RoundRobin, thresholds);
+        let engine = DecisionEngine::with_config(StrategyType::RoundRobin, thresholds, 60);
         let metrics = MetricsCollector::new(2);
         
         metrics.record_success(0, Duration::from_millis(1));

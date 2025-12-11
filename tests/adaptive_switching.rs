@@ -146,3 +146,47 @@ async fn test_load_balancer_worker_hosts_integration() {
     assert_eq!(hosts[0].as_str(), "http://localhost:3001");
     assert_eq!(hosts[1].as_str(), "http://localhost:3002");
 }
+
+/// Test adaptive mode with custom thresholds configuration
+#[tokio::test]
+async fn test_load_balancer_with_custom_thresholds() {
+    use load_balancer::domain::DecisionThresholds;
+    
+    let workers = vec![
+        WorkerUrl::parse("http://localhost:3001".to_string()).unwrap(),
+        WorkerUrl::parse("http://localhost:3002".to_string()).unwrap(),
+    ];
+    
+    let strategy = LoadBalancingStrategy::new_round_robin();
+    
+    // Custom thresholds: lower latency threshold (300ms instead of 500ms)
+    let thresholds = DecisionThresholds {
+        high_latency_ms: 300,
+        high_error_rate: 0.15,
+        min_samples: 5,
+    };
+    
+    let lb = LoadBalancerService::with_adaptive_config(
+        workers,
+        strategy,
+        true,
+        thresholds,
+        30, // 30 second cooldown instead of 60
+    ).expect("should create load balancer");
+    
+    assert!(lb.is_adaptive(), "Adaptive mode should be enabled");
+    
+    // Simulate latency between 300-500ms (would not trigger with default 500ms threshold)
+    let metrics = lb.metrics_collector();
+    for _ in 0..10 {
+        metrics.record_success(0, Duration::from_millis(400));
+        metrics.record_success(1, Duration::from_millis(450));
+    }
+    
+    // With custom 300ms threshold, this should trigger switch
+    lb.evaluate_and_adapt().await.expect("evaluation should succeed");
+    
+    let new_strategy = lb.get_strategy_name().await;
+    assert_eq!(new_strategy, "least_connections", 
+        "Should switch to least_connections with custom lower threshold");
+}

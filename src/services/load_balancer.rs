@@ -65,6 +65,42 @@ impl LoadBalancerService {
         })
     }
 
+    /// Create new load balancer service with custom adaptive configuration
+    pub fn with_adaptive_config(
+        worker_hosts: Vec<WorkerUrl>,
+        strategy: LoadBalancingStrategy,
+        is_adaptive: bool,
+        thresholds: crate::domain::DecisionThresholds,
+        cooldown_seconds: u64,
+    ) -> Result<Self> {
+        if worker_hosts.is_empty() {
+            return Err(LoadBalancerError::configuration("No worker hosts provided"));
+        }
+
+        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len()));
+        
+        let decision_engine = if is_adaptive {
+            let initial_strategy = match strategy {
+                LoadBalancingStrategy::RoundRobin { .. } => StrategyType::RoundRobin,
+                LoadBalancingStrategy::LeastConnections { .. } => StrategyType::LeastConnections,
+            };
+            Some(Arc::new(DecisionEngine::with_config(
+                initial_strategy,
+                thresholds,
+                cooldown_seconds,
+            )))
+        } else {
+            None
+        };
+
+        Ok(LoadBalancerService {
+            worker_hosts,
+            strategy: Arc::new(RwLock::new(strategy)),
+            metrics_collector,
+            decision_engine,
+        })
+    }
+
     /// Select the next worker based on the current load balancing strategy
     pub async fn select_worker(&self) -> Result<(usize, &WorkerUrl)> {
         if self.worker_hosts.is_empty() {

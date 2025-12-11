@@ -77,13 +77,31 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Create decision thresholds from configuration
+    let thresholds = load_balancer::domain::DecisionThresholds {
+        high_latency_ms: config.adaptive.high_latency_ms,
+        high_error_rate: config.adaptive.high_error_rate,
+        min_samples: config.adaptive.min_samples,
+    };
+
     let load_balancer_service = Arc::new(
-        LoadBalancerService::with_adaptive(worker_hosts, strategy, config.server.adaptive)
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to create load balancer service: {}", e))?,
+        LoadBalancerService::with_adaptive_config(
+            worker_hosts,
+            strategy,
+            config.server.adaptive,
+            thresholds,
+            config.adaptive.cooldown_seconds,
+        ).map_err(|e| color_eyre::eyre::eyre!("Failed to create load balancer service: {}", e))?,
     );
 
     // Spawn background evaluation task if adaptive mode is enabled
     if load_balancer_service.is_adaptive() {
+        info!("🤖 Adaptive load balancing enabled");
+        info!("   Latency threshold: {}ms", config.adaptive.high_latency_ms);
+        info!("   Error rate threshold: {:.1}%", config.adaptive.high_error_rate * 100.0);
+        info!("   Min samples: {}", config.adaptive.min_samples);
+        info!("   Cooldown: {}s", config.adaptive.cooldown_seconds);
+        
         let lb_service = load_balancer_service.clone();
         task::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -94,7 +112,6 @@ async fn main() -> Result<()> {
                 }
             }
         });
-        info!("🤖 Adaptive load balancing enabled");
     }
 
     let router = Arc::new(Router::new(load_balancer_service.clone()));
