@@ -1,23 +1,26 @@
 //! Load Balancer Service - core balancing logic
 //!
 //! This service handles the core load balancing functionality including
-//! worker selection, strategy management, and connection tracking.
+//! worker selection, strategy management, connection tracking, and metrics collection.
 //! It's separated from HTTP concerns and request forwarding.
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::domain::{LoadBalancerError, Result, WorkerUrl};
 use crate::load_balancing_strategy::LoadBalancingStrategy;
+use crate::services::MetricsCollector;
 
 /// Load Balancer Service for handling core balancing logic
 /// 
-/// This service manages worker selection and strategy operations
+/// This service manages worker selection, strategy operations, and metrics collection
 /// without dealing with HTTP request forwarding.
 pub struct LoadBalancerService {
     /// List of backend worker URLs (validated)
     worker_hosts: Vec<WorkerUrl>,
     /// Current load balancing strategy (protected by RwLock for thread safety)
     strategy: Arc<RwLock<LoadBalancingStrategy>>,
+    /// Metrics collector for tracking worker performance
+    metrics_collector: Arc<MetricsCollector>,
 }
 
 impl LoadBalancerService {
@@ -31,9 +34,12 @@ impl LoadBalancerService {
             return Err(LoadBalancerError::configuration("No worker hosts provided"));
         }
 
+        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len()));
+
         Ok(LoadBalancerService {
             worker_hosts,
             strategy: Arc::new(RwLock::new(strategy)),
+            metrics_collector,
         })
     }
 
@@ -78,5 +84,10 @@ impl LoadBalancerService {
     /// Get the current worker host list
     pub fn worker_hosts(&self) -> &Vec<WorkerUrl> {
         &self.worker_hosts
+    }
+
+    /// Get reference to the metrics collector
+    pub fn metrics_collector(&self) -> &Arc<MetricsCollector> {
+        &self.metrics_collector
     }
 }
