@@ -9,7 +9,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use http_body_util::BodyExt;
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Instant};
 use crate::domain::{LoadBalancerError, Result};
 use crate::services::LoadBalancerService;
 use crate::ResponseBody;
@@ -41,11 +41,14 @@ impl ProxyRoutes {
     /// 1. Selects a worker using the load balancing service
     /// 2. Forwards the request while preserving headers and body
     /// 3. Tracks connections for strategies that need it
-    /// 4. Returns the worker's response
+    /// 4. Records metrics for adaptive load balancing
+    /// 5. Returns the worker's response
     pub async fn forward_request(
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<ResponseBody>> {
+        let start = Instant::now();
+        
         let (worker_index, worker_url) = self.load_balancer_service.select_worker().await?;
 
         self.load_balancer_service.connection_started(worker_index).await;
@@ -75,13 +78,29 @@ impl ProxyRoutes {
         
         self.load_balancer_service.connection_ended(worker_index).await;
         
+        let duration = start.elapsed();
+        
         match result {
             Ok(response) => {
+                if response.status().is_success() {
+                    self.load_balancer_service
+                        .metrics_collector()
+                        .record_success(worker_index, duration);
+                } else {
+                    self.load_balancer_service
+                        .metrics_collector()
+                        .record_error(worker_index, duration);
+                }
+                
                 let (parts, body) = response.into_parts();
                 let boxed_body = body.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>).boxed();
                 Ok(Response::from_parts(parts, boxed_body))
             }
             Err(e) => {
+                self.load_balancer_service
+                    .metrics_collector()
+                    .record_error(worker_index, duration);
+                
                 Err(LoadBalancerError::http_client(&worker_uri, e))
             }
         }
