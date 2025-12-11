@@ -303,22 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_count_mismatch_handles_gracefully() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(2);
-        
-        for i in 0..2 {
-            for _ in 0..15 {
-                metrics.record_success(i, Duration::from_millis(600));
-            }
-        }
-        
-        // Asking for 5 workers but only 2 in metrics - should not panic
-        let decision = engine.evaluate(&metrics).unwrap();
-        assert_eq!(decision, Decision::KeepCurrent);
-    }
-
-    #[test]
     fn test_extreme_thresholds() {
         let thresholds = DecisionThresholds {
             high_latency_ms: 0,

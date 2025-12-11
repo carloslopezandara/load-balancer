@@ -62,6 +62,10 @@ pub struct ServerConfig {
     
     #[validate(length(min = 1))]
     pub strategy: String,
+    
+    /// Enable adaptive load balancing
+    #[serde(default)]
+    pub adaptive: bool,
 }
 
 /// Workers configuration with validation
@@ -144,6 +148,7 @@ impl Config {
                 port: cli.port,
                 host: cli.host,
                 strategy: cli.strategy,
+                adaptive: false,
             },
             workers: WorkersConfig {
                 hosts: worker_hosts,
@@ -177,6 +182,7 @@ mod tests {
                 port: 8080,
                 host: "0.0.0.0".to_string(),
                 strategy: "round_robin".to_string(),
+                adaptive: false,
             },
             workers: WorkersConfig {
                 hosts: vec![

@@ -3,7 +3,7 @@
 /// This is the main entry point for the load balancer server.
 /// It coordinates between the core load balancer functionality and admin API.
 
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use hyper::{body::Incoming, service::service_fn, Request, Response};
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo};
@@ -78,9 +78,24 @@ async fn main() -> Result<()> {
     };
 
     let load_balancer_service = Arc::new(
-        LoadBalancerService::new(worker_hosts, strategy)
+        LoadBalancerService::with_adaptive(worker_hosts, strategy, config.server.adaptive)
             .map_err(|e| color_eyre::eyre::eyre!("Failed to create load balancer service: {}", e))?,
     );
+
+    // Spawn background evaluation task if adaptive mode is enabled
+    if load_balancer_service.is_adaptive() {
+        let lb_service = load_balancer_service.clone();
+        task::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if let Err(e) = lb_service.evaluate_and_adapt().await {
+                    tracing::error!("Adaptive evaluation failed: {}", e);
+                }
+            }
+        });
+        info!("🤖 Adaptive load balancing enabled");
+    }
 
     let router = Arc::new(Router::new(load_balancer_service.clone()));
 

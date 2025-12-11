@@ -1,0 +1,23 @@
+# Load Balancer Configuration with Adaptive Mode
+# This example enables adaptive load balancing
+
+[server]
+port = 8080
+host = "0.0.0.0"
+strategy = "round_robin"
+adaptive = true
+
+[[workers.hosts]]
+url = "http://localhost:3001"
+enabled = true
+
+[[workers.hosts]]
+url = "http://localhost:3002"
+enabled = true
+
+[[workers.hosts]]
+url = "http://localhost:3003"
+enabled = true
+
+[logging]
+level = "info"
