@@ -160,6 +160,32 @@ impl DecisionEngine {
         }
         Ok(())
     }
+
+    /// Get the time of the last strategy switch
+    pub fn last_switch_time(&self) -> Result<Option<Instant>> {
+        self.last_switch
+            .read()
+            .map(|guard| *guard)
+            .map_err(|_| LoadBalancerError::concurrency("failed to read last switch time"))
+    }
+
+    /// Get remaining cooldown time in seconds
+    pub fn cooldown_remaining_seconds(&self) -> Result<Option<u64>> {
+        let last_switch = self.last_switch_time()?;
+        
+        Ok(match last_switch {
+            None => None,
+            Some(last) => {
+                let elapsed = last.elapsed();
+                if elapsed >= self.switch_cooldown {
+                    None // Cooldown expired
+                } else {
+                    let remaining = self.switch_cooldown - elapsed;
+                    Some(remaining.as_secs())
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]

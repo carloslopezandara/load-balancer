@@ -16,6 +16,7 @@ use crate::domain::{
     ChangeStrategyRequest,
     MetricsResponse,
     WorkerMetricsResponse,
+    DecisionStatusResponse,
 };
 use crate::utils::create_json_response_with_status;
 use crate::utils::http_utils::{create_fallback_error_response, parse_json_body};
@@ -175,6 +176,50 @@ impl AdminService {
         Ok(create_json_response_with_status(&response, hyper::StatusCode::OK)
             .unwrap_or_else(|e| {
                 tracing::error!("Failed to serialize metrics response: {}", e);
+                create_fallback_error_response()
+            }))
+    }
+
+    /// Get adaptive decision engine status
+    /// 
+    /// Returns information about the decision engine including whether adaptive mode
+    /// is enabled, current strategy, and cooldown status.
+    pub async fn get_decision_status(&self) -> Result<Response<ResponseBody>> {
+        tracing::debug!("Getting decision engine status");
+        
+        let adaptive_enabled = self.load_balancer_service.is_adaptive();
+        let strategy_name = self.load_balancer_service.get_strategy_name().await;
+        
+        let current_strategy = StrategyType::from_str(strategy_name).map_err(|_e| {
+            LoadBalancerError::internal(format!("Invalid strategy stored: {}", strategy_name))
+        })?;
+        
+        let (last_evaluation, can_switch, cooldown_remaining) = if let Some(engine) = self.load_balancer_service.decision_engine() {
+            let can_switch = engine.can_switch()?;
+            let cooldown = engine.cooldown_remaining_seconds()?;
+            let last_eval = engine.last_switch_time()?
+                .map(|instant| {
+                    let elapsed = instant.elapsed();
+                    format!("{} seconds ago", elapsed.as_secs())
+                });
+            
+            (last_eval, can_switch, cooldown)
+        } else {
+            (None, false, None)
+        };
+        
+        let response = DecisionStatusResponse {
+            adaptive_enabled,
+            current_strategy,
+            last_evaluation,
+            can_switch,
+            cooldown_remaining_seconds: cooldown_remaining,
+        };
+        
+        tracing::info!("Decision status: adaptive={}, can_switch={}", adaptive_enabled, can_switch);
+        Ok(create_json_response_with_status(&response, hyper::StatusCode::OK)
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to serialize decision status response: {}", e);
                 create_fallback_error_response()
             }))
     }

@@ -61,6 +61,16 @@ pub struct MetricsResponse {
     pub overall_success_rate: f64,
 }
 
+/// Response showing adaptive decision engine status
+#[derive(Serialize, Debug)]
+pub struct DecisionStatusResponse {
+    pub adaptive_enabled: bool,
+    pub current_strategy: StrategyType,
+    pub last_evaluation: Option<String>,
+    pub can_switch: bool,
+    pub cooldown_remaining_seconds: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

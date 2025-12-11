@@ -113,6 +113,11 @@ impl LoadBalancerService {
         &self.metrics_collector
     }
 
+    /// Get reference to the decision engine if adaptive mode is enabled
+    pub fn decision_engine(&self) -> Option<&Arc<DecisionEngine>> {
+        self.decision_engine.as_ref()
+    }
+
     /// Evaluate metrics and adapt strategy if needed (only if adaptive mode is enabled)
     pub async fn evaluate_and_adapt(&self) -> Result<()> {
         let Some(engine) = &self.decision_engine else {
