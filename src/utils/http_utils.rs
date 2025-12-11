@@ -19,16 +19,6 @@ use super::constants::headers;
 /// 3. Parses JSON into the target type
 /// 
 /// All errors are properly logged and converted to LoadBalancerError.
-/// 
-/// # Type Parameters
-/// 
-/// * `T` - The type to deserialize the JSON into (must implement DeserializeOwned)
-/// 
-/// # Examples
-/// 
-/// ```ignore
-/// let request_data: ChangeStrategyRequest = parse_json_body(req).await?;
-/// ```
 pub async fn parse_json_body<T: DeserializeOwned>(
     req: Request<Incoming>
 ) -> Result<T> {
