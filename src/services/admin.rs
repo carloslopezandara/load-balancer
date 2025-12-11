@@ -14,6 +14,8 @@ use crate::domain::{
     StrategyResponse,
     ChangeStrategyResponse,
     ChangeStrategyRequest,
+    MetricsResponse,
+    WorkerMetricsResponse,
 };
 use crate::utils::create_json_response_with_status;
 use crate::utils::http_utils::{create_fallback_error_response, parse_json_body};
@@ -117,6 +119,62 @@ impl AdminService {
         Ok(create_json_response_with_status(&response, hyper::StatusCode::OK)
             .unwrap_or_else(|e| {
                 tracing::error!("Failed to serialize admin response: {}", e);
+                create_fallback_error_response()
+            }))
+    }
+
+    /// Get metrics for all workers
+    /// 
+    /// Returns detailed metrics including request counts, latency, and error rates
+    /// for each worker and overall statistics.
+    pub async fn get_metrics(&self) -> Result<Response<ResponseBody>> {
+        tracing::debug!("Getting worker metrics");
+        
+        let worker_hosts = self.load_balancer_service.worker_hosts();
+        let metrics_collector = self.load_balancer_service.metrics_collector();
+        
+        let mut workers = Vec::new();
+        let mut total_requests = 0u64;
+        let mut total_successful = 0u64;
+        
+        for (index, worker_url) in worker_hosts.iter().enumerate() {
+            if let Some(worker_metrics) = metrics_collector.get_worker_metrics(index) {
+                let total = worker_metrics.request_count();
+                let failed = worker_metrics.error_count();
+                let successful = total - failed;
+                let avg_latency = metrics_collector.average_response_time_ms(index).unwrap_or(0) as f64;
+                let error_rate = metrics_collector.error_rate(index) * 100.0; // Convert to percentage
+                
+                total_requests += total;
+                total_successful += successful;
+                
+                workers.push(WorkerMetricsResponse {
+                    worker_url: worker_url.as_str().to_string(),
+                    total_requests: total,
+                    successful_requests: successful,
+                    failed_requests: failed,
+                    average_latency_ms: avg_latency,
+                    error_rate,
+                });
+            }
+        }
+        
+        let overall_success_rate = if total_requests > 0 {
+            (total_successful as f64 / total_requests as f64) * 100.0
+        } else {
+            0.0
+        };
+        
+        let response = MetricsResponse {
+            workers,
+            total_requests,
+            overall_success_rate,
+        };
+        
+        tracing::info!("Metrics retrieved: {} total requests", total_requests);
+        Ok(create_json_response_with_status(&response, hyper::StatusCode::OK)
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to serialize metrics response: {}", e);
                 create_fallback_error_response()
             }))
     }

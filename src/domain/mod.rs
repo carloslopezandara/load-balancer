@@ -12,7 +12,7 @@ mod strategy;
 mod worker;
 
 // Re-export all public types for convenience
-pub use admin::{ChangeStrategyRequest, ChangeStrategyResponse, StrategyResponse};
+pub use admin::{ChangeStrategyRequest, ChangeStrategyResponse, StrategyResponse, MetricsResponse, WorkerMetricsResponse};
 pub use decision::{Decision, DecisionThresholds, SwitchReason};
 pub use error::LoadBalancerError;
 pub use metrics::WorkerMetrics;
