@@ -93,16 +93,26 @@ pub struct WorkerHost {
     
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    
+    /// Artificial delay in milliseconds for testing (0-5000ms, 0 = no delay)
+    #[serde(default)]
+    #[validate(range(max = 5000, message = "artificial_delay_ms must be between 0 and 5000"))]
+    pub artificial_delay_ms: u64,
+    
+    /// Artificial error rate for testing (0.0-1.0, where 0.0 = no errors, 1.0 = 100% errors)
+    #[serde(default)]
+    #[validate(range(max = 1.0, message = "artificial_error_rate must be between 0.0 and 1.0"))]
+    pub artificial_error_rate: f64,
 }
 
 /// Adaptive load balancing configuration
 #[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct AdaptiveConfig {
-    /// Maximum acceptable average response time in milliseconds
+    /// Maximum acceptable average response time in milliseconds (100-5000ms)
     #[validate(range(min = 100, max = 5000, message = "high_latency_ms must be between 100 and 5000"))]
     pub high_latency_ms: u64,
     
-    /// Maximum acceptable error rate (0.0 to 1.0)
+    /// Maximum acceptable error rate (0.01-1.0, where 0.1 = 10%, 1.0 = 100%)
     #[validate(range(min = 0.01, max = 1.0, message = "high_error_rate must be between 0.01 and 1.0"))]
     pub high_error_rate: f64,
     
@@ -175,16 +185,22 @@ impl Config {
                 WorkerHost {
                     url: "http://localhost:3000".to_string(),
                     enabled: true,
+                    artificial_delay_ms: 0,
+                    artificial_error_rate: 0.0,
                 },
                 WorkerHost {
                     url: "http://localhost:3001".to_string(),
                     enabled: true,
+                    artificial_delay_ms: 0,
+                    artificial_error_rate: 0.0,
                 }
             ]
         } else {
             cli.workers.into_iter().map(|url| WorkerHost {
                 url,
                 enabled: true,
+                artificial_delay_ms: 0,
+                artificial_error_rate: 0.0,
             }).collect()
         };
         
@@ -237,6 +253,8 @@ mod tests {
                     WorkerHost {
                         url: "http://localhost:3000".to_string(),
                         enabled: true,
+                        artificial_delay_ms: 0,
+                        artificial_error_rate: 0.0,
                     }
                 ],
             },
