@@ -19,7 +19,7 @@ pub use error::LoadBalancerError;
 pub use metrics::WorkerMetrics;
 pub use request_context::RequestContext;
 pub use strategy::StrategyType;
-pub use worker::{WorkerHealthResponse, WorkerResponse, WorkerUrl};
+pub use worker::{WorkerResponse, WorkerUrl};
 
 /// Domain Result type alias for convenience
 pub type Result<T> = std::result::Result<T, LoadBalancerError>;

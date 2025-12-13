@@ -51,7 +51,6 @@ cargo run --bin load_balancer
 
 ```bash
 # Terminal 4: Test the load balancer
-curl http://127.0.0.1:1337/health
 curl http://127.0.0.1:1337/test
 ```
 

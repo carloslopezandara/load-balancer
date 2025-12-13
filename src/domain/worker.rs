@@ -2,7 +2,6 @@
 /// 
 /// Contains all worker-related types:
 /// - WorkerUrl: Validated URL newtype
-/// - WorkerHealthResponse: Health check DTO
 /// - WorkerResponse: Generic worker response DTO
 
 use color_eyre::eyre::{eyre, Result};
@@ -116,22 +115,6 @@ impl<'de> Deserialize<'de> for WorkerUrl {
 // ============================================================================
 // Worker Response DTOs
 // ============================================================================
-
-/// Worker health response model (DTO)
-#[derive(Serialize, Debug, Clone)]
-pub struct WorkerHealthResponse {
-    pub status: String,
-    pub port: u16,
-}
-
-impl WorkerHealthResponse {
-    pub fn healthy(port: u16) -> Self {
-        Self {
-            status: "healthy".to_string(),
-            port,
-        }
-    }
-}
 
 /// Worker generic response model (DTO)
 #[derive(Serialize, Debug, Clone)]

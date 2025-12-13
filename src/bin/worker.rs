@@ -18,7 +18,7 @@ use tracing::{error, info};
 
 // Import the load balancer's HTTP utilities for consistent responses
 use load_balancer::utils::{create_json_response_with_status, create_fallback_error_response};
-use load_balancer::domain::{WorkerHealthResponse, WorkerResponse};
+use load_balancer::domain::WorkerResponse;
 use load_balancer::{ResponseBody, LoadBalancerError};
 
 /// Worker server for load balancer testing
@@ -67,53 +67,20 @@ async fn worker_handler(req: Request<Incoming>, args: &Args) -> Result<Response<
         tokio::time::sleep(Duration::from_millis(args.artificial_delay_ms)).await;
     }
     
-    let path = req.uri().path();
-    match path {
-        // Health check endpoint - returns JSON status
-        "/health" => {
-                let health_response = WorkerHealthResponse::healthy(port);
-                Ok(create_json_response_with_status(&health_response, hyper::StatusCode::OK).unwrap_or_else(|e| {
-                    tracing::error!("Failed to serialize health response: {}", e);
-                    create_fallback_error_response()
-                }))
-        },
-        // Work simulation endpoint - short processing delay
-        "/work" => {
-                let message = format!(
-                    "worker on port {} is processing {} {}",
-                    port,
-                    req.method(),
-                    req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
-                );
+    // All requests handled uniformly
+    // Processing time controlled by --artificial-delay-ms CLI argument
+    let message = format!(
+        "worker on port {} received {} {}",
+        port,
+        req.method(),
+        req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+    );
 
-                // Simulate fast work processing
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                let work_response = WorkerResponse::new(message, port);
-                Ok(create_json_response_with_status(&work_response, hyper::StatusCode::OK).unwrap_or_else(|e| {
-                    tracing::error!("Failed to serialize work response: {}", e);
-                    create_fallback_error_response()
-                }))
-        },
-        // Default endpoint - simulates longer processing time
-        _ => {
-                let message = format!(
-                    "worker on port {} received {} {}",
-                    port,
-                    req.method(),
-                    req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
-                );
-
-                // Simulate slower request processing for load balancing demonstrations
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                let default_response = WorkerResponse::new(message, port);
-                Ok(create_json_response_with_status(&default_response, hyper::StatusCode::OK).unwrap_or_else(|e| {
-                    tracing::error!("Failed to serialize default response: {}", e);
-                    create_fallback_error_response()
-                }))
-        }
-    }
+    let response = WorkerResponse::new(message, port);
+    Ok(create_json_response_with_status(&response, hyper::StatusCode::OK).unwrap_or_else(|e| {
+        tracing::error!("Failed to serialize response: {}", e);
+        create_fallback_error_response()
+    }))
 }
 
 #[tokio::main]
