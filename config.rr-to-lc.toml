@@ -8,29 +8,29 @@ strategy = "round_robin"
 adaptive = true
 shutdown_timeout_seconds = 30
 
-# Worker 1: Normal (no artificial behavior)
+# Worker 1: Fast (minimal 50ms delay)
 [[workers.hosts]]
 url = "http://localhost:3001"
 enabled = true
-artificial_delay_ms = 0
+artificial_delay_ms = 50
 artificial_error_rate = 0.0
 
-# Worker 2: Slow (800ms delay to trigger high latency)
+# Worker 2: Very Slow (800ms delay - exceeds 300ms threshold)
 [[workers.hosts]]
 url = "http://localhost:3002"
 enabled = true
 artificial_delay_ms = 800
 artificial_error_rate = 0.0
 
-# Worker 3: Error-prone (20% error rate to trigger high errors)
+# Worker 3: Slow (400ms delay - exceeds 300ms threshold)
 [[workers.hosts]]
 url = "http://localhost:3003"
 enabled = true
-artificial_delay_ms = 0
+artificial_delay_ms = 400
 artificial_error_rate = 0.2
 
 [adaptive]
-high_latency_ms = 500
+high_latency_ms = 300
 high_error_rate = 0.1
 min_samples = 10
 cooldown_seconds = 60
