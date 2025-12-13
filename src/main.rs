@@ -1,108 +1,126 @@
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+/// Load Balancer Main Server
+/// 
+/// This is the main entry point for the load balancer server.
+/// It coordinates between the core load balancer functionality and admin API.
 
-use hyper::{body::Incoming, service::service_fn, Request, Response, Uri};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use hyper::{body::Incoming, service::service_fn, Request, Response};
 use hyper::server::conn::http1;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::{Client, Error as ClientError, ResponseFuture};
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::sync::RwLock;
+use hyper_util::rt::{TokioIo};
 use tokio::{net::TcpListener, task};
+use tracing::{error, info, warn};
+use color_eyre::Result;
 
-struct LoadBalancer {
-    client: Client<HttpConnector, Incoming>,
-    worker_hosts: Vec<String>,
-    current_worker: usize,
-}
+use load_balancer::load_balancing_strategy::LoadBalancingStrategy;
+use load_balancer::routes::Router;
+use load_balancer::services::LoadBalancerService;
+use load_balancer::domain::WorkerUrl;
+use load_balancer::ResponseBody;
 
-impl LoadBalancer {
-    pub fn new(worker_hosts: Vec<String>) -> Result<Self, String> {
-        if worker_hosts.is_empty() {
-            return Err("No worker hosts provided".into());
-        }
-
-        let connector = HttpConnector::new();
-        let client = Client::builder(TokioExecutor::new()).build(connector);
-
-        Ok(LoadBalancer {
-            client,
-            worker_hosts,
-            current_worker: 0,
-        })
-    }
-
-    pub fn forward_request(&mut self, req: Request<Incoming>) -> ResponseFuture {
-        let mut worker_uri = self.get_worker().to_owned();
-
-        // Extract the path and query from the original request
-        if let Some(path_and_query) = req.uri().path_and_query() {
-            worker_uri.push_str(path_and_query.as_str());
-        }
-
-        // Create a new URI from the worker URI
-        let new_uri = Uri::from_str(&worker_uri).unwrap();
-
-        // Extract the headers from the original request
-        let headers = req.headers().clone();
-
-        // Clone the original request's headers and method
-        let mut new_req = Request::builder()
-            .method(req.method())
-            .uri(new_uri)
-            .body(req.into_body())
-            .expect("request builder");
-
-        // Copy headers from the original request
-        for (key, value) in headers.iter() {
-            new_req.headers_mut().insert(key, value.clone());
-        }
-
-        self.client.request(new_req)
-    }
-
-    fn get_worker(&mut self) -> &str {
-        // Use a round-robin strategy to select a worker
-        let worker = self.worker_hosts.get(self.current_worker).unwrap();
-        self.current_worker = (self.current_worker + 1) % self.worker_hosts.len();
-        worker
-    }
-}
-
+/// Main request handler using the new Router architecture
+/// 
+/// This function uses the new Router to handle all incoming requests
+/// with proper separation of concerns between routes and services.
 async fn handle(
     req: Request<Incoming>,
-    load_balancer: Arc<RwLock<LoadBalancer>>,
-) -> Result<Response<Incoming>, ClientError> {
-    load_balancer.write().await.forward_request(req).await
+    router: Arc<Router>,
+) -> Result<Response<ResponseBody>, Infallible> {
+    match router.handle(req).await {
+        Ok(response) => Ok(response),
+        Err(domain_error) => Ok(domain_error.into_response()),
+    }
 }
 
 #[tokio::main]
-async fn main() {
-    let worker_hosts = vec![
-        "http://localhost:3000".to_string(),
-        "http://localhost:3001".to_string(),
-    ];
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+    
+    let config = load_balancer::utils::Config::parse_config()
+        .map_err(|e| color_eyre::eyre::eyre!("Configuration error: {}", e))?;
+    
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("load_balancer={},tower_http=info,hyper=info", config.logging.level).into())
+        )
+        .with_target(false)
+        .init();
 
-    let load_balancer = Arc::new(RwLock::new(
-        LoadBalancer::new(worker_hosts).expect("failed to create load balancer"),
+    info!("🚀 Starting Load Balancer Server");
+    info!("📊 Configuration: {}:{}", config.server.host, config.server.port);
+
+    let worker_hosts: Result<Vec<WorkerUrl>, _> = config.workers.hosts
+        .iter()
+        .filter(|worker| worker.enabled)
+        .map(|worker| WorkerUrl::parse(worker.url.clone()))
+        .collect();
+    
+    let worker_hosts = worker_hosts
+        .map_err(|e| color_eyre::eyre::eyre!("Invalid worker URL in configuration: {}", e))?;
+
+    if worker_hosts.is_empty() {
+        return Err(color_eyre::eyre::eyre!("No enabled workers configured"));
+    }
+
+    info!("🔧 Configured worker hosts: {:?}", worker_hosts.iter().map(|w| w.as_str()).collect::<Vec<_>>());
+
+    let strategy_type = load_balancer::domain::StrategyType::from_str(&config.server.strategy)
+        .map_err(|e| color_eyre::eyre::eyre!("Invalid strategy in configuration: {}", e))?;
+
+    let strategy = match strategy_type {
+        load_balancer::domain::StrategyType::RoundRobin => {
+            LoadBalancingStrategy::new_round_robin()
+        }
+        load_balancer::domain::StrategyType::LeastConnections => {
+            LoadBalancingStrategy::new_least_connections(worker_hosts.len())
+                .map_err(|e| color_eyre::eyre::eyre!("Failed to create least connections strategy: {}", e))?
+        }
+    };
+
+    let load_balancer_service = Arc::new(
+        LoadBalancerService::new(worker_hosts, strategy)
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to create load balancer service: {}", e))?,
+    );
+
+    let router = Arc::new(Router::new(load_balancer_service.clone()));
+
+    let addr: SocketAddr = SocketAddr::from((
+        config.server.host.parse::<std::net::IpAddr>()
+            .map_err(|e| color_eyre::eyre::eyre!("Invalid host in configuration: {}", e))?, 
+        config.server.port
     ));
-
-    let addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 1337));
 
     let listener = TcpListener::bind(addr)
         .await
-        .expect("failed to bind TCP listener");
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to bind TCP listener on {}: {}", addr, e))?;
 
-    println!("load balancer listening on http://{}", addr);
+    info!("🚀 Load balancer listening on http://{}", addr);
+    info!("📊 Admin API available at http://{}/admin/strategy", addr);
+    info!("🔄 Current strategy: {}", load_balancer_service.get_strategy_name().await);
 
+    // Main server loop
     loop {
-        let (stream, _) = listener.accept().await.expect("failed to accept");
-        let load_balancer = load_balancer.clone();
+        let (stream, remote_addr) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(e) => {
+                error!("Failed to accept connection: {}", e);
+                continue;
+            }
+        };
+        
+        let router = router.clone();
 
         task::spawn(async move {
             let io = TokioIo::new(stream);
-            let service = service_fn(move |req| handle(req, load_balancer.clone()));
+            let service = service_fn(move |req| {
+                let router = router.clone();
+                async move {
+                    handle(req, router).await
+                }
+            });
 
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
-                eprintln!("error: {}", e);
+                warn!("Connection error from {}: {}", remote_addr, e);
             }
         });
     }
