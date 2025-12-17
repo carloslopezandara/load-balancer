@@ -1,6 +1,8 @@
 /// Decision engine domain types for adaptive load balancing
 
+use std::time::Duration;
 use crate::domain::strategy::StrategyType;
+use crate::utils::constants::adaptive_defaults;
 
 /// Thresholds for triggering strategy switches
 #[derive(Debug, Clone)]
@@ -11,14 +13,17 @@ pub struct DecisionThresholds {
     pub high_error_rate: f64,
     /// Minimum number of requests before making decisions
     pub min_samples: u64,
+    /// Minimum time between strategy switches
+    pub cooldown: Duration,
 }
 
 impl Default for DecisionThresholds {
     fn default() -> Self {
         Self {
-            high_latency_ms: 500,
-            high_error_rate: 0.1,
-            min_samples: 10,
+            high_latency_ms: adaptive_defaults::HIGH_LATENCY_MS,
+            high_error_rate: adaptive_defaults::HIGH_ERROR_RATE,
+            min_samples: adaptive_defaults::MIN_SAMPLES,
+            cooldown: Duration::from_secs(adaptive_defaults::COOLDOWN_SECONDS),
         }
     }
 }
@@ -47,9 +52,9 @@ mod tests {
     #[test]
     fn test_default_thresholds() {
         let thresholds = DecisionThresholds::default();
-        assert_eq!(thresholds.high_latency_ms, 500);
-        assert_eq!(thresholds.high_error_rate, 0.1);
-        assert_eq!(thresholds.min_samples, 10);
+        assert_eq!(thresholds.high_latency_ms, adaptive_defaults::HIGH_LATENCY_MS);
+        assert_eq!(thresholds.high_error_rate, adaptive_defaults::HIGH_ERROR_RATE);
+        assert_eq!(thresholds.min_samples, adaptive_defaults::MIN_SAMPLES);
     }
 
     #[test]
@@ -82,9 +87,11 @@ mod tests {
             high_latency_ms: 1000,
             high_error_rate: 0.15,
             min_samples: 20,
+            cooldown: Duration::from_secs(120),
         };
         assert_eq!(thresholds.high_latency_ms, 1000);
         assert_eq!(thresholds.high_error_rate, 0.15);
         assert_eq!(thresholds.min_samples, 20);
+        assert_eq!(thresholds.cooldown, Duration::from_secs(120));
     }
 }

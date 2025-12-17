@@ -52,7 +52,7 @@ impl LoadBalancerService {
                 LoadBalancingStrategy::RoundRobin { .. } => StrategyType::RoundRobin,
                 LoadBalancingStrategy::LeastConnections { .. } => StrategyType::LeastConnections,
             };
-            Some(Arc::new(DecisionEngine::new(initial_strategy)))
+            Some(Arc::new(DecisionEngine::new(initial_strategy, metrics_collector.clone())))
         } else {
             None
         };
@@ -71,7 +71,6 @@ impl LoadBalancerService {
         strategy: LoadBalancingStrategy,
         is_adaptive: bool,
         thresholds: crate::domain::DecisionThresholds,
-        cooldown_seconds: u64,
     ) -> Result<Self> {
         if worker_hosts.is_empty() {
             return Err(LoadBalancerError::configuration("No worker hosts provided"));
@@ -87,7 +86,7 @@ impl LoadBalancerService {
             Some(Arc::new(DecisionEngine::with_config(
                 initial_strategy,
                 thresholds,
-                cooldown_seconds,
+                metrics_collector.clone(),
             )))
         } else {
             None
@@ -160,7 +159,7 @@ impl LoadBalancerService {
             return Ok(());
         };
 
-        let decision = engine.evaluate(&self.metrics_collector)?;
+        let decision = engine.evaluate()?;
 
         if let Decision::SwitchTo { strategy, reason } = &decision {
             let new_strategy = match strategy {

@@ -82,6 +82,7 @@ async fn main() -> Result<()> {
         high_latency_ms: config.adaptive.high_latency_ms,
         high_error_rate: config.adaptive.high_error_rate,
         min_samples: config.adaptive.min_samples,
+        cooldown: std::time::Duration::from_secs(config.adaptive.cooldown_seconds),
     };
 
     let load_balancer_service = Arc::new(
@@ -90,21 +91,22 @@ async fn main() -> Result<()> {
             strategy,
             config.server.adaptive,
             thresholds,
-            config.adaptive.cooldown_seconds,
         ).map_err(|e| color_eyre::eyre::eyre!("Failed to create load balancer service: {}", e))?,
     );
 
     // Spawn background evaluation task if adaptive mode is enabled
     if load_balancer_service.is_adaptive() {
         info!("🤖 Adaptive load balancing enabled");
+        info!("   Evaluation interval: {}s", config.adaptive.evaluation_interval_seconds);
         info!("   Latency threshold: {}ms", config.adaptive.high_latency_ms);
         info!("   Error rate threshold: {:.1}%", config.adaptive.high_error_rate * 100.0);
         info!("   Min samples: {}", config.adaptive.min_samples);
         info!("   Cooldown: {}s", config.adaptive.cooldown_seconds);
         
         let lb_service = load_balancer_service.clone();
+        let eval_interval = config.adaptive.evaluation_interval_seconds;
         task::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut interval = tokio::time::interval(Duration::from_secs(eval_interval));
             loop {
                 interval.tick().await;
                 if let Err(e) = lb_service.evaluate_and_adapt().await {

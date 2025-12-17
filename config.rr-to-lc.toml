@@ -34,6 +34,7 @@ high_latency_ms = 300
 high_error_rate = 0.1
 min_samples = 10
 cooldown_seconds = 60
+evaluation_interval_seconds = 5
 
 [logging]
 level = "info"

@@ -3,10 +3,17 @@
 //! This service evaluates worker metrics and decides when to switch
 //! load balancing strategies based on performance thresholds and rate limiting.
 
-use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 use crate::domain::{Decision, DecisionThresholds, LoadBalancerError, Result, StrategyType, SwitchReason};
 use crate::services::MetricsCollector;
+
+/// State of the current strategy and last switch time
+#[derive(Clone)]
+struct StrategyState {
+    current: StrategyType,
+    last_switch: Option<Instant>,
+}
 
 /// Decision engine for adaptive load balancing
 ///
@@ -14,59 +21,63 @@ use crate::services::MetricsCollector;
 /// with rate limiting to prevent excessive changes.
 pub struct DecisionEngine {
     thresholds: DecisionThresholds,
-    current_strategy: RwLock<StrategyType>,
-    last_switch: RwLock<Option<Instant>>,
-    switch_cooldown: Duration,
+    /// Current strategy and last switch time protected by a single lock
+    /// to prevent deadlocks from holding two separate locks
+    state: RwLock<StrategyState>,
+    metrics: Arc<MetricsCollector>,
 }
 
 impl DecisionEngine {
     /// Create new decision engine with default thresholds
-    pub fn new(initial_strategy: StrategyType) -> Self {
+    pub fn new(initial_strategy: StrategyType, metrics: Arc<MetricsCollector>) -> Self {
         Self {
             thresholds: DecisionThresholds::default(),
-            current_strategy: RwLock::new(initial_strategy),
-            last_switch: RwLock::new(None),
-            switch_cooldown: Duration::from_secs(60),
+            state: RwLock::new(StrategyState {
+                current: initial_strategy,
+                last_switch: None,
+            }),
+            metrics,
         }
     }
 
-    /// Create new decision engine with custom thresholds and cooldown
+    /// Create new decision engine with custom thresholds
     pub fn with_config(
         initial_strategy: StrategyType,
         thresholds: DecisionThresholds,
-        cooldown_seconds: u64,
+        metrics: Arc<MetricsCollector>,
     ) -> Self {
         Self {
             thresholds,
-            current_strategy: RwLock::new(initial_strategy),
-            last_switch: RwLock::new(None),
-            switch_cooldown: Duration::from_secs(cooldown_seconds),
+            state: RwLock::new(StrategyState {
+                current: initial_strategy,
+                last_switch: None,
+            }),
+            metrics,
         }
     }
 
     /// Get current strategy
     pub fn current_strategy(&self) -> Result<StrategyType> {
-        self.current_strategy
+        self.state
             .read()
-            .map(|guard| guard.clone())
+            .map(|guard| guard.current.clone())
             .map_err(|_| LoadBalancerError::concurrency("failed to read current strategy"))
     }
 
     /// Check if enough time has passed since last switch
     pub fn can_switch(&self) -> Result<bool> {
-        let last_switch = self.last_switch
+        let state = self.state
             .read()
             .map_err(|_| LoadBalancerError::concurrency("failed to check switch cooldown"))?;
         
-        Ok(match *last_switch {
-            None => true,
-            Some(last) => last.elapsed() >= self.switch_cooldown,
-        })
+        Ok(state.last_switch.map_or(true, |last| {
+            last.elapsed() >= self.thresholds.cooldown
+        }))
     }
 
     /// Evaluate metrics and decide whether to switch strategies
-    pub fn evaluate(&self, metrics: &MetricsCollector) -> Result<Decision> {
-        let worker_count = metrics.all_metrics().len();
+    pub fn evaluate(&self) -> Result<Decision> {
+        let worker_count = self.metrics.all_metrics().len();
         
         if worker_count == 0 {
             return Ok(Decision::KeepCurrent);
@@ -77,7 +88,7 @@ impl DecisionEngine {
         if !self.can_switch()? {
             tracing::debug!(
                 current_strategy = %current.as_str(),
-                cooldown_seconds = self.switch_cooldown.as_secs(),
+                cooldown_seconds = self.thresholds.cooldown.as_secs(),
                 "Switch cooldown active"
             );
             return Ok(Decision::KeepCurrent);
@@ -89,21 +100,21 @@ impl DecisionEngine {
         let mut high_error_rate_count = 0;
 
         for i in 0..worker_count {
-            if let Some(worker_metrics) = metrics.get_worker_metrics(i) {
+            if let Some(worker_metrics) = self.metrics.get_worker_metrics(i) {
                 let request_count = worker_metrics.request_count();
                 total_requests += request_count;
 
                 // Only evaluate workers with sufficient samples
                 if request_count >= self.thresholds.min_samples {
                     // Check latency using MetricsCollector calculations
-                    if let Some(avg_latency) = metrics.average_response_time_ms(i) {
+                    if let Some(avg_latency) = self.metrics.average_response_time_ms(i) {
                         if avg_latency > self.thresholds.high_latency_ms {
                             high_latency_count += 1;
                         }
                     }
 
                     // Check error rate using MetricsCollector calculations
-                    let error_rate = metrics.error_rate(i);
+                    let error_rate = self.metrics.error_rate(i);
                     if error_rate > self.thresholds.high_error_rate {
                         high_error_rate_count += 1;
                     }
@@ -160,17 +171,15 @@ impl DecisionEngine {
     }
 
     /// Apply a decision by updating current strategy and timestamp
+    /// Uses a single lock to prevent deadlocks
     pub fn apply_decision(&self, decision: &Decision) -> Result<()> {
         if let Decision::SwitchTo { strategy, reason } = decision {
-            let mut current = self.current_strategy
+            let mut state = self.state
                 .write()
                 .map_err(|_| LoadBalancerError::concurrency("failed to update strategy"))?;
-            let mut last_switch = self.last_switch
-                .write()
-                .map_err(|_| LoadBalancerError::concurrency("failed to record switch timestamp"))?;
 
-            *current = strategy.clone();
-            *last_switch = Some(Instant::now());
+            state.current = strategy.clone();
+            state.last_switch = Some(Instant::now());
 
             tracing::info!(
                 new_strategy = %strategy.as_str(),
@@ -183,9 +192,9 @@ impl DecisionEngine {
 
     /// Get the time of the last strategy switch
     pub fn last_switch_time(&self) -> Result<Option<Instant>> {
-        self.last_switch
+        self.state
             .read()
-            .map(|guard| *guard)
+            .map(|guard| guard.last_switch)
             .map_err(|_| LoadBalancerError::concurrency("failed to read last switch time"))
     }
 
@@ -197,10 +206,10 @@ impl DecisionEngine {
             None => None,
             Some(last) => {
                 let elapsed = last.elapsed();
-                if elapsed >= self.switch_cooldown {
+                if elapsed >= self.thresholds.cooldown {
                     None // Cooldown expired
                 } else {
-                    let remaining = self.switch_cooldown - elapsed;
+                    let remaining = self.thresholds.cooldown - elapsed;
                     Some(remaining.as_secs())
                 }
             }
@@ -211,33 +220,34 @@ impl DecisionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_zero_workers_returns_keep_current() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(0);
+        let metrics = Arc::new(MetricsCollector::new(0));
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics);
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert_eq!(decision, Decision::KeepCurrent);
     }
 
     #[test]
     fn test_insufficient_samples_no_switch() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(2);
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
         // Only 2 samples, below threshold of 10
         metrics.record_success(0, Duration::from_millis(1000));
         metrics.record_success(1, Duration::from_millis(1000));
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert_eq!(decision, Decision::KeepCurrent);
     }
 
     #[test]
     fn test_high_latency_majority_triggers_switch() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(2);
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
         for i in 0..2 {
             for _ in 0..15 {
@@ -245,7 +255,7 @@ mod tests {
             }
         }
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert_eq!(
             decision,
             Decision::SwitchTo {
@@ -257,8 +267,8 @@ mod tests {
 
     #[test]
     fn test_high_error_rate_majority_triggers_switch() {
-        let engine = DecisionEngine::new(StrategyType::LeastConnections);
-        let metrics = MetricsCollector::new(2);
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::new(StrategyType::LeastConnections, metrics.clone());
         
         for i in 0..2 {
             for _ in 0..8 {
@@ -269,7 +279,7 @@ mod tests {
             }
         }
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert_eq!(
             decision,
             Decision::SwitchTo {
@@ -281,8 +291,8 @@ mod tests {
 
     #[test]
     fn test_minority_issues_no_switch() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(3);
+        let metrics = Arc::new(MetricsCollector::new(3));
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
         for i in 0..3 {
             for _ in 0..15 {
@@ -295,14 +305,14 @@ mod tests {
             metrics.record_success(0, Duration::from_millis(600));
         }
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert_eq!(decision, Decision::KeepCurrent);
     }
 
     #[test]
     fn test_already_using_optimal_strategy_no_switch() {
-        let engine = DecisionEngine::new(StrategyType::LeastConnections);
-        let metrics = MetricsCollector::new(2);
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::new(StrategyType::LeastConnections, metrics.clone());
         
         for i in 0..2 {
             for _ in 0..15 {
@@ -310,14 +320,14 @@ mod tests {
             }
         }
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert_eq!(decision, Decision::KeepCurrent);
     }
 
     #[test]
     fn test_rate_limiting_enforced() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(2);
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
         for i in 0..2 {
             for _ in 0..15 {
@@ -325,26 +335,26 @@ mod tests {
             }
         }
         
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         engine.apply_decision(&decision).unwrap();
         
         assert!(!engine.can_switch().unwrap());
         
-        let decision2 = engine.evaluate(&metrics).unwrap();
+        let decision2 = engine.evaluate().unwrap();
         assert_eq!(decision2, Decision::KeepCurrent);
     }
 
     #[test]
     fn test_single_worker_majority_logic() {
-        let engine = DecisionEngine::new(StrategyType::RoundRobin);
-        let metrics = MetricsCollector::new(1);
+        let metrics = Arc::new(MetricsCollector::new(1));
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
         for _ in 0..15 {
             metrics.record_success(0, Duration::from_millis(600));
         }
         
         // Single worker with high latency should trigger switch (1 >= majority of 1)
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert!(matches!(decision, Decision::SwitchTo { .. }));
     }
 
@@ -354,15 +364,16 @@ mod tests {
             high_latency_ms: 0,
             high_error_rate: 0.0,
             min_samples: 1,
+            cooldown: Duration::from_secs(60),
         };
-        let engine = DecisionEngine::with_config(StrategyType::RoundRobin, thresholds, 60);
-        let metrics = MetricsCollector::new(2);
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::with_config(StrategyType::RoundRobin, thresholds, metrics.clone());
         
         metrics.record_success(0, Duration::from_millis(1));
         metrics.record_success(1, Duration::from_millis(1));
         
         // Even 1ms latency should trigger with threshold=0
-        let decision = engine.evaluate(&metrics).unwrap();
+        let decision = engine.evaluate().unwrap();
         assert!(matches!(decision, Decision::SwitchTo { .. }));
     }
 }

@@ -3,7 +3,6 @@
 //! This service coordinates graceful shutdown of the load balancer,
 //! handling signal broadcasting, state tracking, and timeout management.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::{timeout, Duration};
@@ -12,23 +11,20 @@ use crate::domain::{LoadBalancerError, Result};
 /// Shutdown coordinator for graceful server termination
 ///
 /// Coordinates graceful shutdown with configurable timeout and signal broadcasting.
-/// Uses atomic operations and async notifications for thread-safe coordination.
+/// Uses Notify for thread-safe async coordination.
 #[derive(Debug)]
 pub struct ShutdownCoordinator {
     shutdown_signal: Arc<Notify>,
-    is_shutting_down: Arc<AtomicBool>,
     timeout_duration: Duration,
 }
 
 impl ShutdownCoordinator {
     /// Minimum allowed shutdown timeout in seconds
     const MIN_TIMEOUT_SECONDS: u64 = 1;
-    /// Maximum allowed shutdown timeout in seconds
-    const MAX_TIMEOUT_SECONDS: u64 = 300;
 
     /// Create new shutdown coordinator with validated timeout
     ///
-    /// Timeout must be between 1 and 300 seconds.
+    /// Timeout must be at least 1 second.
     pub fn new(timeout_seconds: u64) -> Result<Self> {
         if timeout_seconds < Self::MIN_TIMEOUT_SECONDS {
             return Err(LoadBalancerError::configuration(
@@ -40,36 +36,18 @@ impl ShutdownCoordinator {
             ));
         }
 
-        if timeout_seconds > Self::MAX_TIMEOUT_SECONDS {
-            return Err(LoadBalancerError::configuration(
-                format!(
-                    "Shutdown timeout must not exceed {} seconds, got {}",
-                    Self::MAX_TIMEOUT_SECONDS,
-                    timeout_seconds
-                )
-            ));
-        }
-
         Ok(Self {
             shutdown_signal: Arc::new(Notify::new()),
-            is_shutting_down: Arc::new(AtomicBool::new(false)),
             timeout_duration: Duration::from_secs(timeout_seconds),
         })
     }
 
     /// Trigger graceful shutdown
     ///
-    /// Sets shutdown flag and notifies all waiting tasks.
-    /// This method is idempotent.
+    /// Notifies all waiting tasks. This method is idempotent.
     pub fn shutdown(&self) {
-        self.is_shutting_down.store(true, Ordering::SeqCst);
         self.shutdown_signal.notify_waiters();
         tracing::info!("Shutdown initiated");
-    }
-
-    /// Check if shutdown has been triggered
-    pub fn is_shutting_down(&self) -> bool {
-        self.is_shutting_down.load(Ordering::SeqCst)
     }
 
     /// Wait for shutdown signal
@@ -122,8 +100,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_coordinator_creation() {
-        let coordinator = ShutdownCoordinator::new(30).unwrap();
-        assert!(!coordinator.is_shutting_down());
+        let _coordinator = ShutdownCoordinator::new(30).unwrap();
+        // Coordinator created successfully
     }
 
     #[tokio::test]
@@ -134,20 +112,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shutdown_coordinator_validation_max() {
-        let result = ShutdownCoordinator::new(301);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not exceed 300 seconds"));
-    }
-
-    #[tokio::test]
     async fn test_shutdown_signal() {
-        let coordinator = ShutdownCoordinator::new(30).unwrap();
+        use std::sync::Arc;
+        let coordinator = Arc::new(ShutdownCoordinator::new(30).unwrap());
         
-        assert!(!coordinator.is_shutting_down());
+        // Spawn task to wait for shutdown in background
+        let coordinator_clone = coordinator.clone();
+        let handle = tokio::task::spawn(async move {
+            coordinator_clone.wait_for_shutdown().await;
+            "completed"
+        });
         
+        // Small delay to ensure task is waiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        
+        // Trigger shutdown
         coordinator.shutdown();
         
-        assert!(coordinator.is_shutting_down());
+        // Verify task completes
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            handle
+        ).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().unwrap(), "completed");
     }
 }

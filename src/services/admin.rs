@@ -150,7 +150,7 @@ impl AdminService {
                 total_successful += successful;
                 
                 workers.push(WorkerMetricsResponse {
-                    worker_url: worker_url.as_str().to_string(),
+                    worker_url: worker_url.into(),
                     total_requests: total,
                     successful_requests: successful,
                     failed_requests: failed,

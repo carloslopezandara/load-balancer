@@ -109,6 +109,7 @@ impl ProxyRoutes {
                     tracing::info!(
                         request_id = %ctx.request_id,
                         worker_index = worker_index,
+                        worker_url = %worker_uri,
                         status = response.status().as_u16(),
                         duration_ms = duration.as_millis(),
                         "Request completed successfully"
@@ -121,6 +122,7 @@ impl ProxyRoutes {
                     tracing::warn!(
                         request_id = %ctx.request_id,
                         worker_index = worker_index,
+                        worker_url = %worker_uri,
                         status = response.status().as_u16(),
                         duration_ms = duration.as_millis(),
                         "Request failed"

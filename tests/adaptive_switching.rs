@@ -4,7 +4,7 @@
 /// and MetricsCollector working together in realistic scenarios.
 
 use load_balancer::services::LoadBalancerService;
-use load_balancer::domain::WorkerUrl;
+use load_balancer::domain::{WorkerUrl};
 use load_balancer::load_balancing_strategy::LoadBalancingStrategy;
 use std::time::Duration;
 
@@ -164,6 +164,7 @@ async fn test_load_balancer_with_custom_thresholds() {
         high_latency_ms: 300,
         high_error_rate: 0.15,
         min_samples: 5,
+        cooldown: Duration::from_secs(30), // 30 second cooldown instead of 60
     };
     
     let lb = LoadBalancerService::with_adaptive_config(
@@ -171,7 +172,6 @@ async fn test_load_balancer_with_custom_thresholds() {
         strategy,
         true,
         thresholds,
-        30, // 30 second cooldown instead of 60
     ).expect("should create load balancer");
     
     assert!(lb.is_adaptive(), "Adaptive mode should be enabled");

@@ -53,6 +53,22 @@ impl WorkerUrl {
     }
 }
 
+// ============================================================================
+// From/Into Implementations
+// ============================================================================
+
+impl From<WorkerUrl> for String {
+    fn from(url: WorkerUrl) -> Self {
+        url.0
+    }
+}
+
+impl From<&WorkerUrl> for String {
+    fn from(url: &WorkerUrl) -> Self {
+        url.0.clone()
+    }
+}
+
 /// Validate a worker URL
 /// 
 /// Checks that the URL:
