@@ -133,26 +133,39 @@ impl DecisionEngine {
         }
 
         // Decision logic: switch if majority of workers have issues
+        // Priority-based to prevent oscillation when both conditions present
         let majority_threshold = (worker_count / 2) + 1;
 
-        // High latency detected - switch to LeastConnections
-        if high_latency_count >= majority_threshold && current != StrategyType::LeastConnections {
-            tracing::info!(
-                high_latency_count = high_latency_count,
-                worker_count = worker_count,
-                threshold_ms = self.thresholds.high_latency_ms,
-                current_strategy = %current.as_str(),
-                new_strategy = "least_connections",
-                "High latency detected, switching strategy"
-            );
-            return Ok(Decision::SwitchTo {
-                strategy: StrategyType::LeastConnections,
-                reason: SwitchReason::HighLatency,
-            });
+        let has_high_latency = high_latency_count >= majority_threshold;
+        let has_high_errors = high_error_rate_count >= majority_threshold;
+
+        // When BOTH conditions present, prioritize error handling
+        // Errors are more critical than latency
+        if has_high_errors && has_high_latency {
+            if current != StrategyType::RoundRobin {
+                tracing::warn!(
+                    high_error_rate_count = high_error_rate_count,
+                    high_latency_count = high_latency_count,
+                    worker_count = worker_count,
+                    current_strategy = %current.as_str(),
+                    new_strategy = "round_robin",
+                    "Both high errors and latency detected, prioritizing error handling"
+                );
+                return Ok(Decision::SwitchTo {
+                    strategy: StrategyType::RoundRobin,
+                    reason: SwitchReason::HighErrorRate,
+                });
+            } else {
+                // Already in RR and both conditions present - stay put
+                tracing::debug!(
+                    "Both conditions present but already in optimal strategy (RoundRobin)"
+                );
+                return Ok(Decision::KeepCurrent);
+            }
         }
 
-        // High error rate detected - switch to RoundRobin for fair distribution
-        if high_error_rate_count >= majority_threshold && current != StrategyType::RoundRobin {
+        // Only high error rate (no latency issue)
+        if has_high_errors && current != StrategyType::RoundRobin {
             tracing::info!(
                 high_error_rate_count = high_error_rate_count,
                 worker_count = worker_count,
@@ -164,6 +177,22 @@ impl DecisionEngine {
             return Ok(Decision::SwitchTo {
                 strategy: StrategyType::RoundRobin,
                 reason: SwitchReason::HighErrorRate,
+            });
+        }
+
+        // Only high latency (no error issue)
+        if has_high_latency && current != StrategyType::LeastConnections {
+            tracing::info!(
+                high_latency_count = high_latency_count,
+                worker_count = worker_count,
+                threshold_ms = self.thresholds.high_latency_ms,
+                current_strategy = %current.as_str(),
+                new_strategy = "least_connections",
+                "High latency detected, switching strategy"
+            );
+            return Ok(Decision::SwitchTo {
+                strategy: StrategyType::LeastConnections,
+                reason: SwitchReason::HighLatency,
             });
         }
 
@@ -375,5 +404,54 @@ mod tests {
         // Even 1ms latency should trigger with threshold=0
         let decision = engine.evaluate().unwrap();
         assert!(matches!(decision, Decision::SwitchTo { .. }));
+    }
+
+    #[test]
+    fn test_both_conditions_prioritizes_errors() {
+        let metrics = Arc::new(MetricsCollector::new(2));
+        let engine = DecisionEngine::new(StrategyType::LeastConnections, metrics.clone());
+        
+        // Simulate BOTH high latency AND high error rate
+        for i in 0..2 {
+            for _ in 0..8 {
+                metrics.record_success(i, Duration::from_millis(600)); // High latency
+            }
+            for _ in 0..3 {
+                metrics.record_error(i, Duration::from_millis(600)); // High errors
+            }
+        }
+        
+        let decision = engine.evaluate().unwrap();
+        
+        // Should prioritize error handling over latency optimization
+        assert_eq!(
+            decision,
+            Decision::SwitchTo {
+                strategy: StrategyType::RoundRobin,  // ← Errors take priority
+                reason: SwitchReason::HighErrorRate,
+            }
+        );
+    }
+
+    #[test]
+    fn test_both_conditions_already_in_rr_stays_put() {
+        let metrics = Arc::new(MetricsCollector::new(2));
+        // Start with RoundRobin
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
+        
+        // Simulate BOTH high latency AND high error rate
+        for i in 0..2 {
+            for _ in 0..8 {
+                metrics.record_success(i, Duration::from_millis(600)); // High latency
+            }
+            for _ in 0..3 {
+                metrics.record_error(i, Duration::from_millis(600)); // High errors
+            }
+        }
+        
+        let decision = engine.evaluate().unwrap();
+        
+        // Should stay in RR (no oscillation)
+        assert_eq!(decision, Decision::KeepCurrent);
     }
 }
