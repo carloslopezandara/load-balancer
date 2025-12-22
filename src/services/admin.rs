@@ -141,10 +141,12 @@ impl AdminService {
         for (index, worker_url) in worker_hosts.iter().enumerate() {
             if let Some(worker_metrics) = metrics_collector.get_worker_metrics(index) {
                 let total = worker_metrics.request_count();
-                let failed = worker_metrics.error_count();
-                let successful = total - failed;
+                let error_rate_decimal = metrics_collector.error_rate(index);
+                // Approximate failed/successful from EMA error rate
+                let failed = (total as f64 * error_rate_decimal) as u64;
+                let successful = total.saturating_sub(failed);
                 let avg_latency = metrics_collector.average_response_time_ms(index).unwrap_or(0) as f64;
-                let error_rate = metrics_collector.error_rate(index) * 100.0; // Convert to percentage
+                let error_rate = error_rate_decimal * 100.0; // Convert to percentage
                 
                 total_requests += total;
                 total_successful += successful;
