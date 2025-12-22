@@ -42,6 +42,35 @@ impl ChangeStrategyResponse {
     }
 }
 
+/// Metrics for a single worker
+#[derive(Serialize, Debug)]
+pub struct WorkerMetricsResponse {
+    pub worker_url: String,
+    pub total_requests: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub average_latency_ms: f64,
+    pub error_rate: f64,
+}
+
+/// Response containing metrics for all workers
+#[derive(Serialize, Debug)]
+pub struct MetricsResponse {
+    pub workers: Vec<WorkerMetricsResponse>,
+    pub total_requests: u64,
+    pub overall_success_rate: f64,
+}
+
+/// Response showing adaptive decision engine status
+#[derive(Serialize, Debug)]
+pub struct DecisionStatusResponse {
+    pub adaptive_enabled: bool,
+    pub current_strategy: StrategyType,
+    pub last_evaluation: Option<String>,
+    pub can_switch: bool,
+    pub cooldown_remaining_seconds: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,23 +1,28 @@
 //! Load Balancer Service - core balancing logic
 //!
 //! This service handles the core load balancing functionality including
-//! worker selection, strategy management, and connection tracking.
+//! worker selection, strategy management, connection tracking, and metrics collection.
 //! It's separated from HTTP concerns and request forwarding.
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::domain::{LoadBalancerError, Result, WorkerUrl};
+use crate::domain::{Decision, LoadBalancerError, Result, StrategyType, WorkerUrl};
 use crate::load_balancing_strategy::LoadBalancingStrategy;
+use crate::services::{DecisionEngine, MetricsCollector};
 
 /// Load Balancer Service for handling core balancing logic
 /// 
-/// This service manages worker selection and strategy operations
+/// This service manages worker selection, strategy operations, and metrics collection
 /// without dealing with HTTP request forwarding.
 pub struct LoadBalancerService {
     /// List of backend worker URLs (validated)
     worker_hosts: Vec<WorkerUrl>,
     /// Current load balancing strategy (protected by RwLock for thread safety)
     strategy: Arc<RwLock<LoadBalancingStrategy>>,
+    /// Metrics collector for tracking worker performance
+    metrics_collector: Arc<MetricsCollector>,
+    /// Optional decision engine for adaptive load balancing
+    decision_engine: Option<Arc<DecisionEngine>>,
 }
 
 impl LoadBalancerService {
@@ -25,15 +30,73 @@ impl LoadBalancerService {
     const ROUND_ROBIN_NAME: &'static str = "round_robin";
     const LEAST_CONNECTIONS_NAME: &'static str = "least_connections";
 
-    /// Create new load balancer service
+    /// Create new load balancer service without adaptive behavior
     pub fn new(worker_hosts: Vec<WorkerUrl>, strategy: LoadBalancingStrategy) -> Result<Self> {
+        Self::with_adaptive(worker_hosts, strategy, false)
+    }
+
+    /// Create new load balancer service with optional adaptive behavior
+    pub fn with_adaptive(
+        worker_hosts: Vec<WorkerUrl>,
+        strategy: LoadBalancingStrategy,
+        is_adaptive: bool,
+    ) -> Result<Self> {
         if worker_hosts.is_empty() {
             return Err(LoadBalancerError::configuration("No worker hosts provided"));
         }
 
+        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len()));
+        
+        let decision_engine = if is_adaptive {
+            let initial_strategy = match strategy {
+                LoadBalancingStrategy::RoundRobin { .. } => StrategyType::RoundRobin,
+                LoadBalancingStrategy::LeastConnections { .. } => StrategyType::LeastConnections,
+            };
+            Some(Arc::new(DecisionEngine::new(initial_strategy, metrics_collector.clone())))
+        } else {
+            None
+        };
+
         Ok(LoadBalancerService {
             worker_hosts,
             strategy: Arc::new(RwLock::new(strategy)),
+            metrics_collector,
+            decision_engine,
+        })
+    }
+
+    /// Create new load balancer service with custom adaptive configuration
+    pub fn with_adaptive_config(
+        worker_hosts: Vec<WorkerUrl>,
+        strategy: LoadBalancingStrategy,
+        is_adaptive: bool,
+        thresholds: crate::domain::DecisionThresholds,
+    ) -> Result<Self> {
+        if worker_hosts.is_empty() {
+            return Err(LoadBalancerError::configuration("No worker hosts provided"));
+        }
+
+        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len()));
+        
+        let decision_engine = if is_adaptive {
+            let initial_strategy = match strategy {
+                LoadBalancingStrategy::RoundRobin { .. } => StrategyType::RoundRobin,
+                LoadBalancingStrategy::LeastConnections { .. } => StrategyType::LeastConnections,
+            };
+            Some(Arc::new(DecisionEngine::with_config(
+                initial_strategy,
+                thresholds,
+                metrics_collector.clone(),
+            )))
+        } else {
+            None
+        };
+
+        Ok(LoadBalancerService {
+            worker_hosts,
+            strategy: Arc::new(RwLock::new(strategy)),
+            metrics_collector,
+            decision_engine,
         })
     }
 
@@ -78,5 +141,50 @@ impl LoadBalancerService {
     /// Get the current worker host list
     pub fn worker_hosts(&self) -> &Vec<WorkerUrl> {
         &self.worker_hosts
+    }
+
+    /// Get reference to the metrics collector
+    pub fn metrics_collector(&self) -> &Arc<MetricsCollector> {
+        &self.metrics_collector
+    }
+
+    /// Get reference to the decision engine if adaptive mode is enabled
+    pub fn decision_engine(&self) -> Option<&Arc<DecisionEngine>> {
+        self.decision_engine.as_ref()
+    }
+
+    /// Evaluate metrics and adapt strategy if needed (only if adaptive mode is enabled)
+    pub async fn evaluate_and_adapt(&self) -> Result<()> {
+        let Some(engine) = &self.decision_engine else {
+            return Ok(());
+        };
+
+        let decision = engine.evaluate()?;
+
+        if let Decision::SwitchTo { strategy, reason } = &decision {
+            let new_strategy = match strategy {
+                StrategyType::RoundRobin => LoadBalancingStrategy::new_round_robin(),
+                StrategyType::LeastConnections => {
+                    LoadBalancingStrategy::new_least_connections(self.worker_hosts.len())?
+                }
+            };
+
+            self.set_strategy(new_strategy).await;
+            engine.apply_decision(&decision)?;
+
+            tracing::info!(
+                new_strategy = %strategy.as_str(),
+                reason = ?reason,
+                worker_count = self.worker_hosts.len(),
+                "Adaptive load balancing strategy switched"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Check if adaptive mode is enabled
+    pub fn is_adaptive(&self) -> bool {
+        self.decision_engine.is_some()
     }
 }

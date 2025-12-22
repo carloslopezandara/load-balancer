@@ -16,7 +16,7 @@ pub mod services;
 pub mod utils;
 
 // Re-export domain types for convenient access
-pub use domain::{LoadBalancerError, Result, StrategyType, ChangeStrategyRequest, StrategyResponse, WorkerHealthResponse};
+pub use domain::{LoadBalancerError, Result, StrategyType, ChangeStrategyRequest, StrategyResponse};
 
 /// Type alias for HTTP response bodies used throughout the load balancer
 pub type ResponseBody = http_body_util::combinators::BoxBody<

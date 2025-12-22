@@ -1,0 +1,41 @@
+# Load Balancer Configuration with Adaptive Mode
+# This example demonstrates switching from least_connections to round_robin
+# due to high error rates
+
+[server]
+port = 8080
+host = "0.0.0.0"
+strategy = "least_connections"  # Start with least_connections
+adaptive = true
+shutdown_timeout_seconds = 30
+
+# Worker 1: Fast but VERY error-prone (30% error rate - forces LC to try other workers)
+[[workers.hosts]]
+url = "http://localhost:3001"
+enabled = true
+artificial_delay_ms = 300
+artificial_error_rate = 0.20
+
+# Worker 2: Fast but very error-prone (30% error rate - exceeds 10% threshold)
+[[workers.hosts]]
+url = "http://localhost:3002"
+enabled = true
+artificial_delay_ms = 300
+artificial_error_rate = 0.15
+
+# Worker 3: Fast but error-prone (20% error rate - exceeds 10% threshold)
+[[workers.hosts]]
+url = "http://localhost:3003"
+enabled = true
+artificial_delay_ms = 300
+artificial_error_rate = 0.0
+
+[adaptive]
+high_latency_ms = 400
+high_error_rate = 0.1  # 10% threshold
+min_samples = 10
+cooldown_seconds = 60
+evaluation_interval_seconds = 5
+
+[logging]
+level = "info"

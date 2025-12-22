@@ -9,8 +9,8 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use http_body_util::BodyExt;
-use std::{str::FromStr, sync::Arc};
-use crate::domain::{LoadBalancerError, Result};
+use std::{str::FromStr, sync::Arc, time::Instant};
+use crate::domain::{LoadBalancerError, RequestContext, Result};
 use crate::services::LoadBalancerService;
 use crate::ResponseBody;
 
@@ -41,12 +41,34 @@ impl ProxyRoutes {
     /// 1. Selects a worker using the load balancing service
     /// 2. Forwards the request while preserving headers and body
     /// 3. Tracks connections for strategies that need it
-    /// 4. Returns the worker's response
+    /// 4. Records metrics for adaptive load balancing
+    /// 5. Returns the worker's response
     pub async fn forward_request(
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<ResponseBody>> {
+        let ctx = RequestContext::new(
+            req.method().to_string(),
+            req.uri().path().to_string(),
+        );
+        
+        tracing::info!(
+            request_id = %ctx.request_id,
+            method = %ctx.method,
+            path = %ctx.path,
+            "Processing request"
+        );
+        
+        let start = Instant::now();
+        
         let (worker_index, worker_url) = self.load_balancer_service.select_worker().await?;
+        
+        tracing::debug!(
+            request_id = %ctx.request_id,
+            worker_index = worker_index,
+            worker_url = %worker_url.as_str(),
+            "Selected worker"
+        );
 
         self.load_balancer_service.connection_started(worker_index).await;
 
@@ -75,13 +97,56 @@ impl ProxyRoutes {
         
         self.load_balancer_service.connection_ended(worker_index).await;
         
+        let duration = start.elapsed();
+        
         match result {
             Ok(response) => {
+                if response.status().is_success() {
+                    self.load_balancer_service
+                        .metrics_collector()
+                        .record_success(worker_index, duration);
+                    
+                    tracing::info!(
+                        request_id = %ctx.request_id,
+                        worker_index = worker_index,
+                        worker_url = %worker_uri,
+                        status = response.status().as_u16(),
+                        duration_ms = duration.as_millis(),
+                        "Request completed successfully"
+                    );
+                } else {
+                    self.load_balancer_service
+                        .metrics_collector()
+                        .record_error(worker_index, duration);
+                    
+                    tracing::warn!(
+                        request_id = %ctx.request_id,
+                        worker_index = worker_index,
+                        worker_url = %worker_uri,
+                        status = response.status().as_u16(),
+                        duration_ms = duration.as_millis(),
+                        "Request failed"
+                    );
+                }
+                
                 let (parts, body) = response.into_parts();
                 let boxed_body = body.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>).boxed();
                 Ok(Response::from_parts(parts, boxed_body))
             }
             Err(e) => {
+                self.load_balancer_service
+                    .metrics_collector()
+                    .record_error(worker_index, duration);
+                
+                tracing::error!(
+                    request_id = %ctx.request_id,
+                    worker_index = worker_index,
+                    worker_url = %worker_uri,
+                    duration_ms = duration.as_millis(),
+                    error = %e,
+                    "Request failed"
+                );
+                
                 Err(LoadBalancerError::http_client(&worker_uri, e))
             }
         }

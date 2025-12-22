@@ -1,0 +1,40 @@
+# Load Balancer Configuration with Adaptive Mode
+# This example enables adaptive load balancing
+
+[server]
+port = 8080
+host = "0.0.0.0"
+strategy = "round_robin"
+adaptive = true
+shutdown_timeout_seconds = 30
+
+# Worker 1: Fast (minimal 50ms delay)
+[[workers.hosts]]
+url = "http://localhost:3001"
+enabled = true
+artificial_delay_ms = 50
+artificial_error_rate = 0.0
+
+# Worker 2: Very Slow (800ms delay - exceeds 300ms threshold)
+[[workers.hosts]]
+url = "http://localhost:3002"
+enabled = true
+artificial_delay_ms = 800
+artificial_error_rate = 0.0
+
+# Worker 3: Slow (400ms delay - exceeds 300ms threshold)
+[[workers.hosts]]
+url = "http://localhost:3003"
+enabled = true
+artificial_delay_ms = 400
+artificial_error_rate = 0.2
+
+[adaptive]
+high_latency_ms = 300
+high_error_rate = 0.1
+min_samples = 10
+cooldown_seconds = 60
+evaluation_interval_seconds = 5
+
+[logging]
+level = "info"

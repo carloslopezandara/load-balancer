@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use validator::Validate;
 
 use crate::domain::{Result, LoadBalancerError};
+use crate::utils::constants::adaptive_defaults;
 
 /// Load Balancer CLI Configuration
 #[derive(Parser, Debug)]
@@ -47,6 +48,11 @@ pub struct LoadBalancerConfig {
     /// Worker configuration
     pub workers: WorkersConfig,
     
+    /// Adaptive load balancing configuration
+    #[serde(default)]
+    #[validate]
+    pub adaptive: AdaptiveConfig,
+    
     /// Logging configuration
     pub logging: LoggingConfig,
 }
@@ -62,6 +68,15 @@ pub struct ServerConfig {
     
     #[validate(length(min = 1))]
     pub strategy: String,
+    
+    /// Graceful shutdown timeout in seconds
+    #[serde(default = "default_shutdown_timeout")]
+    #[validate(range(min = 1, message = "shutdown_timeout_seconds must be at least 1"))]
+    pub shutdown_timeout_seconds: u64,
+    
+    /// Enable adaptive load balancing
+    #[serde(default)]
+    pub adaptive: bool,
 }
 
 /// Workers configuration with validation
@@ -79,6 +94,55 @@ pub struct WorkerHost {
     
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    
+    /// Artificial delay in milliseconds for testing (0 = no delay)
+    #[serde(default)]
+    pub artificial_delay_ms: u64,
+    
+    /// Artificial error rate for testing (0.0-1.0, where 0.0 = no errors, 1.0 = 100% errors)
+    #[serde(default)]
+    #[validate(range(min = 0.0, max = 1.0, message = "artificial_error_rate must be between 0.0 and 1.0"))]
+    pub artificial_error_rate: f64,
+}
+
+/// Adaptive load balancing configuration
+#[derive(Serialize, Deserialize, Debug, Validate)]
+pub struct AdaptiveConfig {
+    /// Maximum acceptable average response time in milliseconds (100-5000ms)
+    #[validate(range(min = 100, max = 5000, message = "high_latency_ms must be between 100 and 5000"))]
+    pub high_latency_ms: u64,
+    
+    /// Maximum acceptable error rate (0.01-1.0, where 0.1 = 10%, 1.0 = 100%)
+    #[validate(range(min = 0.01, max = 1.0, message = "high_error_rate must be between 0.01 and 1.0"))]
+    pub high_error_rate: f64,
+    
+    /// Minimum number of requests before making decisions
+    #[validate(range(min = 1, max = 1000, message = "min_samples must be between 1 and 1000"))]
+    pub min_samples: u64,
+    
+    /// Cooldown period between strategy switches in seconds
+    #[validate(range(min = 10, max = 600, message = "cooldown_seconds must be between 10 and 600"))]
+    pub cooldown_seconds: u64,
+    
+    /// Evaluation interval for adaptive mode in seconds
+    #[validate(range(min = 1, message = "evaluation_interval_seconds must be at least 1"))]
+    pub evaluation_interval_seconds: u64,
+}
+
+impl Default for AdaptiveConfig {
+    fn default() -> Self {
+        Self {
+            high_latency_ms: adaptive_defaults::HIGH_LATENCY_MS,
+            high_error_rate: adaptive_defaults::HIGH_ERROR_RATE,
+            min_samples: adaptive_defaults::MIN_SAMPLES,
+            cooldown_seconds: adaptive_defaults::COOLDOWN_SECONDS,
+            evaluation_interval_seconds: adaptive_defaults::EVALUATION_INTERVAL_SECONDS,
+        }
+    }
+}
+
+fn default_shutdown_timeout() -> u64 {
+    30
 }
 
 /// Logging configuration
@@ -126,16 +190,22 @@ impl Config {
                 WorkerHost {
                     url: "http://localhost:3000".to_string(),
                     enabled: true,
+                    artificial_delay_ms: 0,
+                    artificial_error_rate: 0.0,
                 },
                 WorkerHost {
                     url: "http://localhost:3001".to_string(),
                     enabled: true,
+                    artificial_delay_ms: 0,
+                    artificial_error_rate: 0.0,
                 }
             ]
         } else {
             cli.workers.into_iter().map(|url| WorkerHost {
                 url,
                 enabled: true,
+                artificial_delay_ms: 0,
+                artificial_error_rate: 0.0,
             }).collect()
         };
         
@@ -144,10 +214,13 @@ impl Config {
                 port: cli.port,
                 host: cli.host,
                 strategy: cli.strategy,
+                adaptive: false,
+                shutdown_timeout_seconds: default_shutdown_timeout(),
             },
             workers: WorkersConfig {
                 hosts: worker_hosts,
             },
+            adaptive: AdaptiveConfig::default(),
             logging: LoggingConfig {
                 level: cli.log_level,
             },
@@ -177,21 +250,141 @@ mod tests {
                 port: 8080,
                 host: "0.0.0.0".to_string(),
                 strategy: "round_robin".to_string(),
+                adaptive: false,
+                shutdown_timeout_seconds: 30,
             },
             workers: WorkersConfig {
                 hosts: vec![
                     WorkerHost {
                         url: "http://localhost:3000".to_string(),
                         enabled: true,
+                        artificial_delay_ms: 0,
+                        artificial_error_rate: 0.0,
                     }
                 ],
             },
+            adaptive: AdaptiveConfig::default(),
             logging: LoggingConfig {
                 level: "info".to_string(),
             },
         };
         
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_config_defaults() {
+        let adaptive = AdaptiveConfig::default();
+        
+        assert_eq!(adaptive.high_latency_ms, adaptive_defaults::HIGH_LATENCY_MS);
+        assert_eq!(adaptive.high_error_rate, adaptive_defaults::HIGH_ERROR_RATE);
+        assert_eq!(adaptive.min_samples, adaptive_defaults::MIN_SAMPLES);
+        assert_eq!(adaptive.cooldown_seconds, adaptive_defaults::COOLDOWN_SECONDS);
+        assert_eq!(adaptive.evaluation_interval_seconds, adaptive_defaults::EVALUATION_INTERVAL_SECONDS);
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_valid() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 1000,
+            high_error_rate: 0.05,
+            min_samples: 20,
+            cooldown_seconds: 120,
+            evaluation_interval_seconds: 10,
+        };
+        
+        assert!(adaptive.validate().is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_latency_too_low() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 50, // Below minimum of 100
+            high_error_rate: 0.1,
+            min_samples: 10,
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_latency_too_high() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 6000, // Above maximum of 5000
+            high_error_rate: 0.1,
+            min_samples: 10,
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_error_rate_too_low() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 0.005, // Below minimum of 0.01
+            min_samples: 10,
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_error_rate_too_high() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 1.5, // Above maximum of 1.0
+            min_samples: 10,
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_min_samples_zero() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 0.1,
+            min_samples: 0, // Below minimum of 1
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_cooldown_too_low() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 0.1,
+            min_samples: 10,
+            cooldown_seconds: 5, // Below minimum of 10
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_cooldown_too_high() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 0.1,
+            min_samples: 10,
+            cooldown_seconds: 700, // Above maximum of 600
+            evaluation_interval_seconds: 5,
+        };
+        
+        assert!(adaptive.validate().is_err());
     }
 
 }

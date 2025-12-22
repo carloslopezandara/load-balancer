@@ -42,6 +42,12 @@ impl AdminRoutes {
             (&Method::POST, "/admin/strategy") => {
                 self.admin_service.change_strategy(req).await
             }
+            (&Method::GET, "/admin/metrics") => {
+                self.admin_service.get_metrics().await
+            }
+            (&Method::GET, "/admin/decision-status") => {
+                self.admin_service.get_decision_status().await
+            }
             _ => {
                 tracing::debug!("Request to unknown path: {} {}", method, path);
                 Err(LoadBalancerError::not_found("Not found"))
