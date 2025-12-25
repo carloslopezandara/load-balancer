@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use crate::domain::LoadBalancerError;
+use crate::utils::constants::metrics::FIXED_POINT_SCALE;
 
 /// Performance metrics for an individual worker using EMA
 /// 
@@ -48,7 +49,7 @@ impl WorkerMetrics {
             ema_latency_ms: AtomicU64::new(0),
             ema_error_rate: AtomicU64::new(0),
             sample_count: AtomicU64::new(0),
-            alpha: (alpha * 10000.0) as u32,
+            alpha: (alpha * FIXED_POINT_SCALE as f64) as u32,
         })
     }
     
@@ -108,7 +109,7 @@ impl WorkerMetrics {
     }
     
     pub fn error_rate(&self) -> f64 {
-        self.get_ema_error_rate() as f64 / 10000.0
+        self.get_ema_error_rate() as f64 / FIXED_POINT_SCALE as f64
     }
 }
 

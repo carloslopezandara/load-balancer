@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 use crate::domain::{WorkerMetrics, LoadBalancerError};
+use crate::utils::constants::metrics::FIXED_POINT_SCALE;
 
 /// Metrics collection service for all workers
 /// 
@@ -61,8 +62,9 @@ impl MetricsCollector {
                 let old_ema = metrics.get_ema_latency_ms();
                 
                 // EMA formula: new = α * sample + (1-α) * old
-                // Using fixed-point arithmetic: divide by 10000 at the end
-                let new_ema = (alpha * sample_ms + (10000 - alpha) * old_ema) / 10000;
+                // Using fixed-point arithmetic: divide by FIXED_POINT_SCALE at the end
+                let scale = FIXED_POINT_SCALE as u64;
+                let new_ema = (alpha * sample_ms + (scale - alpha) * old_ema) / scale;
                 
                 if metrics.compare_exchange_ema_latency(old_ema, new_ema).is_ok() {
                     break;
@@ -80,7 +82,8 @@ impl MetricsCollector {
                 let old_ema = metrics.get_ema_error_rate();
                 
                 // EMA formula: new = α * sample + (1-α) * old
-                let new_ema = (alpha * error_value + (10000 - alpha) * old_ema) / 10000;
+                let scale = FIXED_POINT_SCALE as u64;
+                let new_ema = (alpha * error_value + (scale - alpha) * old_ema) / scale;
                 
                 if metrics.compare_exchange_ema_error_rate(old_ema, new_ema).is_ok() {
                     break;
@@ -103,7 +106,7 @@ impl MetricsCollector {
         if let Some(metrics) = self.workers.get(worker_index) {
             metrics.increment_sample_count();
             self.update_ema_latency(worker_index, duration.as_millis() as u64);
-            self.update_ema_error_rate(worker_index, 10000); // 10000 = 100% error
+            self.update_ema_error_rate(worker_index, FIXED_POINT_SCALE as u64); // FIXED_POINT_SCALE = 100% error
         } else {
             tracing::warn!("Invalid worker_index for metrics: {}", worker_index);
         }

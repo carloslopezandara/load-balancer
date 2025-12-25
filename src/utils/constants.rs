@@ -33,3 +33,10 @@ pub mod adaptive_defaults {
     /// 0.1 provides balanced responsiveness with half-life of ~6.6 samples
     pub const EMA_ALPHA: f64 = 0.1;
 }
+
+/// Metrics calculation constants
+pub mod metrics {
+    /// Fixed-point scaling factor for storing fractional values as integers
+    /// Used for both alpha coefficient and error rate storage in EMA calculations
+    pub const FIXED_POINT_SCALE: u32 = 10000;
+}
