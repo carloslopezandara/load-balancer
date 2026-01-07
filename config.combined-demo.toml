@@ -1,0 +1,43 @@
+# Load Balancer Configuration - Combined Adaptive Demo
+# This demo shows BOTH error-based and latency-based adaptive switching
+
+[server]
+port = 8080
+host = "0.0.0.0"
+strategy = "round_robin"  # Start with RR to test priority logic
+adaptive = true
+shutdown_timeout_seconds = 30
+
+# Worker 1: BOTH slow AND unreliable (triggers both conditions)
+# This worker has both latency and error problems
+[[workers.hosts]]
+url = "http://localhost:3001"
+enabled = true
+artificial_delay_ms = 2000  # High latency: 2000ms > 400ms threshold
+artificial_error_rate = 0.25  # High errors: 25% > 10% threshold
+
+# Worker 2: BOTH slow AND unreliable (triggers both conditions)
+# This worker also has both latency and error problems
+[[workers.hosts]]
+url = "http://localhost:3002"
+enabled = true
+artificial_delay_ms = 2000  # High latency: 2000ms > 400ms threshold
+artificial_error_rate = 0.25  # High errors: 25% > 10% threshold
+
+# Worker 3: BASELINE - fast and reliable (no problems)
+[[workers.hosts]]
+url = "http://localhost:3003"
+enabled = true
+artificial_delay_ms = 50    # Very fast
+artificial_error_rate = 0.0  # No errors
+
+[adaptive]
+high_latency_ms = 400  # For detecting slow workers
+high_error_rate = 0.1  # 10% threshold for errors
+min_samples = 30  # Reduced for faster detection in demo
+cooldown_seconds = 30  # Reduced to allow faster strategy changes
+evaluation_interval_seconds = 5
+ema_alpha = 0.1
+
+[logging]
+level = "info"

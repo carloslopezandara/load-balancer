@@ -127,6 +127,13 @@ pub struct AdaptiveConfig {
     /// Evaluation interval for adaptive mode in seconds
     #[validate(range(min = 1, message = "evaluation_interval_seconds must be at least 1"))]
     pub evaluation_interval_seconds: u64,
+    
+    /// EMA alpha coefficient for metrics tracking (0.01-1.0)
+    /// Controls responsiveness: higher = more reactive, lower = smoother
+    /// Default: 0.1 (10% weight to new samples)
+    #[serde(default = "default_ema_alpha")]
+    #[validate(range(min = 0.01, max = 1.0, message = "ema_alpha must be between 0.01 and 1.0"))]
+    pub ema_alpha: f64,
 }
 
 impl Default for AdaptiveConfig {
@@ -137,12 +144,17 @@ impl Default for AdaptiveConfig {
             min_samples: adaptive_defaults::MIN_SAMPLES,
             cooldown_seconds: adaptive_defaults::COOLDOWN_SECONDS,
             evaluation_interval_seconds: adaptive_defaults::EVALUATION_INTERVAL_SECONDS,
+            ema_alpha: adaptive_defaults::EMA_ALPHA,
         }
     }
 }
 
 fn default_shutdown_timeout() -> u64 {
     30
+}
+
+fn default_ema_alpha() -> f64 {
+    adaptive_defaults::EMA_ALPHA
 }
 
 /// Logging configuration
@@ -291,6 +303,7 @@ mod tests {
             min_samples: 20,
             cooldown_seconds: 120,
             evaluation_interval_seconds: 10,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_ok());
@@ -304,6 +317,7 @@ mod tests {
             min_samples: 10,
             cooldown_seconds: 60,
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_err());
@@ -317,6 +331,7 @@ mod tests {
             min_samples: 10,
             cooldown_seconds: 60,
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_err());
@@ -330,6 +345,7 @@ mod tests {
             min_samples: 10,
             cooldown_seconds: 60,
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_err());
@@ -343,6 +359,7 @@ mod tests {
             min_samples: 10,
             cooldown_seconds: 60,
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_err());
@@ -356,6 +373,7 @@ mod tests {
             min_samples: 0, // Below minimum of 1
             cooldown_seconds: 60,
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_err());
@@ -369,6 +387,7 @@ mod tests {
             min_samples: 10,
             cooldown_seconds: 5, // Below minimum of 10
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
         };
         
         assert!(adaptive.validate().is_err());
@@ -382,6 +401,35 @@ mod tests {
             min_samples: 10,
             cooldown_seconds: 700, // Above maximum of 600
             evaluation_interval_seconds: 5,
+            ema_alpha: 0.1,
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_ema_alpha_too_low() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 0.1,
+            min_samples: 10,
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+            ema_alpha: 0.005, // Below minimum of 0.01
+        };
+        
+        assert!(adaptive.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_config_validation_ema_alpha_too_high() {
+        let adaptive = AdaptiveConfig {
+            high_latency_ms: 500,
+            high_error_rate: 0.1,
+            min_samples: 10,
+            cooldown_seconds: 60,
+            evaluation_interval_seconds: 5,
+            ema_alpha: 1.5, // Above maximum of 1.0
         };
         
         assert!(adaptive.validate().is_err());

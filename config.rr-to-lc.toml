@@ -8,33 +8,34 @@ strategy = "round_robin"
 adaptive = true
 shutdown_timeout_seconds = 30
 
-# Worker 1: Fast (minimal 50ms delay)
+# Worker 1: Very Fast (50ms - liberates connections quickly)
 [[workers.hosts]]
 url = "http://localhost:3001"
 enabled = true
 artificial_delay_ms = 50
 artificial_error_rate = 0.0
 
-# Worker 2: Very Slow (800ms delay - exceeds 300ms threshold)
+# Worker 2: Extremely Slow (2000ms - retains connections for long time)
 [[workers.hosts]]
 url = "http://localhost:3002"
 enabled = true
-artificial_delay_ms = 800
+artificial_delay_ms = 2000
 artificial_error_rate = 0.0
 
-# Worker 3: Slow (400ms delay - exceeds 300ms threshold)
+# Worker 3: Medium (500ms - moderate connection retention)
 [[workers.hosts]]
 url = "http://localhost:3003"
 enabled = true
-artificial_delay_ms = 400
-artificial_error_rate = 0.2
+artificial_delay_ms = 500
+artificial_error_rate = 0.0
 
 [adaptive]
-high_latency_ms = 300
+high_latency_ms = 400  # Workers 2 and 3 exceed this
 high_error_rate = 0.1
-min_samples = 10
+min_samples = 50  # Ensures EMA convergence with alpha=0.1
 cooldown_seconds = 60
 evaluation_interval_seconds = 5
+ema_alpha = 0.1  # EMA responsiveness: 0.1 = smooth, 0.3 = reactive
 
 [logging]
 level = "info"

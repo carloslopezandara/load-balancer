@@ -45,7 +45,8 @@ impl LoadBalancerService {
             return Err(LoadBalancerError::configuration("No worker hosts provided"));
         }
 
-        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len()));
+        // MetricsCollector::new() now returns Result - propagate errors
+        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len())?);
         
         let decision_engine = if is_adaptive {
             let initial_strategy = match strategy {
@@ -71,12 +72,14 @@ impl LoadBalancerService {
         strategy: LoadBalancingStrategy,
         is_adaptive: bool,
         thresholds: crate::domain::DecisionThresholds,
+        ema_alpha: f64,
     ) -> Result<Self> {
         if worker_hosts.is_empty() {
             return Err(LoadBalancerError::configuration("No worker hosts provided"));
         }
 
-        let metrics_collector = Arc::new(MetricsCollector::new(worker_hosts.len()));
+        // MetricsCollector with custom alpha from config - propagate validation errors
+        let metrics_collector = Arc::new(MetricsCollector::with_alpha(worker_hosts.len(), ema_alpha)?);
         
         let decision_engine = if is_adaptive {
             let initial_strategy = match strategy {

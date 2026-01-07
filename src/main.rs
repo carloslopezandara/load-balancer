@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
             strategy,
             config.server.adaptive,
             thresholds,
+            config.adaptive.ema_alpha,
         ).map_err(|e| color_eyre::eyre::eyre!("Failed to create load balancer service: {}", e))?,
     );
 

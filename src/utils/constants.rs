@@ -20,11 +20,23 @@ pub mod adaptive_defaults {
     pub const HIGH_ERROR_RATE: f64 = 0.1;
 
     /// Default minimum number of samples required before making decisions
-    pub const MIN_SAMPLES: u64 = 10;
+    /// With alpha=0.1 (half-life ~6.6 samples), 50 samples ensures proper EMA convergence
+    pub const MIN_SAMPLES: u64 = 50;
 
     /// Default cooldown period between strategy switches in seconds
     pub const COOLDOWN_SECONDS: u64 = 60;
 
     /// Default evaluation interval for adaptive mode in seconds
     pub const EVALUATION_INTERVAL_SECONDS: u64 = 5;
+
+    /// Default EMA alpha value (smoothing factor)
+    /// 0.1 provides balanced responsiveness with half-life of ~6.6 samples
+    pub const EMA_ALPHA: f64 = 0.1;
+}
+
+/// Metrics calculation constants
+pub mod metrics {
+    /// Fixed-point scaling factor for storing fractional values as integers
+    /// Used for both alpha coefficient and error rate storage in EMA calculations
+    pub const FIXED_POINT_SCALE: u32 = 10000;
 }

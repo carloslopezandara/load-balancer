@@ -107,15 +107,30 @@ impl DecisionEngine {
                 // Only evaluate workers with sufficient samples
                 if request_count >= self.thresholds.min_samples {
                     // Check latency using MetricsCollector calculations
-                    if let Some(avg_latency) = self.metrics.average_response_time_ms(i) {
-                        if avg_latency > self.thresholds.high_latency_ms {
-                            high_latency_count += 1;
-                        }
+                    let avg_latency = self.metrics.average_response_time_ms(i);
+                    let error_rate = self.metrics.error_rate(i);
+                    
+                    let has_high_latency = avg_latency.map_or(false, |lat| lat > self.thresholds.high_latency_ms);
+                    let has_high_errors = error_rate > self.thresholds.high_error_rate;
+                    
+                    // Log worker evaluation for transparency in demos
+                    tracing::info!(
+                        worker_index = i,
+                        requests = request_count,
+                        avg_latency_ms = avg_latency,
+                        error_rate_pct = format!("{:.1}", error_rate * 100.0),
+                        high_latency = has_high_latency,
+                        high_errors = has_high_errors,
+                        latency_threshold_ms = self.thresholds.high_latency_ms,
+                        error_threshold_pct = format!("{:.1}", self.thresholds.high_error_rate * 100.0),
+                        "Worker evaluation metrics"
+                    );
+                    
+                    if has_high_latency {
+                        high_latency_count += 1;
                     }
 
-                    // Check error rate using MetricsCollector calculations
-                    let error_rate = self.metrics.error_rate(i);
-                    if error_rate > self.thresholds.high_error_rate {
+                    if has_high_errors {
                         high_error_rate_count += 1;
                     }
                 }
@@ -133,26 +148,39 @@ impl DecisionEngine {
         }
 
         // Decision logic: switch if majority of workers have issues
+        // Priority-based to prevent oscillation when both conditions present
         let majority_threshold = (worker_count / 2) + 1;
 
-        // High latency detected - switch to LeastConnections
-        if high_latency_count >= majority_threshold && current != StrategyType::LeastConnections {
-            tracing::info!(
-                high_latency_count = high_latency_count,
-                worker_count = worker_count,
-                threshold_ms = self.thresholds.high_latency_ms,
-                current_strategy = %current.as_str(),
-                new_strategy = "least_connections",
-                "High latency detected, switching strategy"
-            );
-            return Ok(Decision::SwitchTo {
-                strategy: StrategyType::LeastConnections,
-                reason: SwitchReason::HighLatency,
-            });
+        let has_high_latency = high_latency_count >= majority_threshold;
+        let has_high_errors = high_error_rate_count >= majority_threshold;
+
+        // When BOTH conditions present, prioritize error handling
+        // Errors are more critical than latency
+        if has_high_errors && has_high_latency {
+            if current != StrategyType::RoundRobin {
+                tracing::warn!(
+                    high_error_rate_count = high_error_rate_count,
+                    high_latency_count = high_latency_count,
+                    worker_count = worker_count,
+                    current_strategy = %current.as_str(),
+                    new_strategy = "round_robin",
+                    "Both high errors and latency detected, prioritizing error handling"
+                );
+                return Ok(Decision::SwitchTo {
+                    strategy: StrategyType::RoundRobin,
+                    reason: SwitchReason::HighErrorRate,
+                });
+            } else {
+                // Already in RR and both conditions present - stay put
+                tracing::debug!(
+                    "Both conditions present but already in optimal strategy (RoundRobin)"
+                );
+                return Ok(Decision::KeepCurrent);
+            }
         }
 
-        // High error rate detected - switch to RoundRobin for fair distribution
-        if high_error_rate_count >= majority_threshold && current != StrategyType::RoundRobin {
+        // Only high error rate (no latency issue)
+        if has_high_errors && current != StrategyType::RoundRobin {
             tracing::info!(
                 high_error_rate_count = high_error_rate_count,
                 worker_count = worker_count,
@@ -164,6 +192,22 @@ impl DecisionEngine {
             return Ok(Decision::SwitchTo {
                 strategy: StrategyType::RoundRobin,
                 reason: SwitchReason::HighErrorRate,
+            });
+        }
+
+        // Only high latency (no error issue)
+        if has_high_latency && current != StrategyType::LeastConnections {
+            tracing::info!(
+                high_latency_count = high_latency_count,
+                worker_count = worker_count,
+                threshold_ms = self.thresholds.high_latency_ms,
+                current_strategy = %current.as_str(),
+                new_strategy = "least_connections",
+                "High latency detected, switching strategy"
+            );
+            return Ok(Decision::SwitchTo {
+                strategy: StrategyType::LeastConnections,
+                reason: SwitchReason::HighLatency,
             });
         }
 
@@ -224,7 +268,9 @@ mod tests {
 
     #[test]
     fn test_zero_workers_returns_keep_current() {
-        let metrics = Arc::new(MetricsCollector::new(0));
+        // With validation, we now need at least 1 worker
+        // With only 1 worker and no samples, should return KeepCurrent
+        let metrics = Arc::new(MetricsCollector::new(1).unwrap());
         let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics);
         
         let decision = engine.evaluate().unwrap();
@@ -233,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_samples_no_switch() {
-        let metrics = Arc::new(MetricsCollector::new(2));
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
         let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
         // Only 2 samples, below threshold of 10
@@ -246,11 +292,12 @@ mod tests {
 
     #[test]
     fn test_high_latency_majority_triggers_switch() {
-        let metrics = Arc::new(MetricsCollector::new(2));
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
         let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
+        // With EMA (alpha=0.1), need more samples for convergence to 600ms
         for i in 0..2 {
-            for _ in 0..15 {
+            for _ in 0..50 {
                 metrics.record_success(i, Duration::from_millis(600));
             }
         }
@@ -267,14 +314,15 @@ mod tests {
 
     #[test]
     fn test_high_error_rate_majority_triggers_switch() {
-        let metrics = Arc::new(MetricsCollector::new(2));
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
         let engine = DecisionEngine::new(StrategyType::LeastConnections, metrics.clone());
         
+        // With EMA (alpha=0.1), need more samples for convergence to ~27% error rate
         for i in 0..2 {
-            for _ in 0..8 {
+            for _ in 0..50 {
                 metrics.record_success(i, Duration::from_millis(100));
             }
-            for _ in 0..3 {
+            for _ in 0..20 {
                 metrics.record_error(i, Duration::from_millis(100));
             }
         }
@@ -291,17 +339,19 @@ mod tests {
 
     #[test]
     fn test_minority_issues_no_switch() {
-        let metrics = Arc::new(MetricsCollector::new(3));
+        let metrics = Arc::new(MetricsCollector::new(3).unwrap());
         let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
+        // Establish baseline with low latency for all workers
         for i in 0..3 {
-            for _ in 0..15 {
+            for _ in 0..30 {
                 metrics.record_success(i, Duration::from_millis(100));
             }
         }
         
         // Only worker 0 has high latency (1 of 3, not majority)
-        for _ in 0..10 {
+        // Need more samples for EMA to converge towards 600ms
+        for _ in 0..50 {
             metrics.record_success(0, Duration::from_millis(600));
         }
         
@@ -311,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_already_using_optimal_strategy_no_switch() {
-        let metrics = Arc::new(MetricsCollector::new(2));
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
         let engine = DecisionEngine::new(StrategyType::LeastConnections, metrics.clone());
         
         for i in 0..2 {
@@ -326,11 +376,12 @@ mod tests {
 
     #[test]
     fn test_rate_limiting_enforced() {
-        let metrics = Arc::new(MetricsCollector::new(2));
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
         let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
+        // With EMA, need more samples for convergence
         for i in 0..2 {
-            for _ in 0..15 {
+            for _ in 0..50 {
                 metrics.record_success(i, Duration::from_millis(600));
             }
         }
@@ -346,10 +397,11 @@ mod tests {
 
     #[test]
     fn test_single_worker_majority_logic() {
-        let metrics = Arc::new(MetricsCollector::new(1));
+        let metrics = Arc::new(MetricsCollector::new(1).unwrap());
         let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
         
-        for _ in 0..15 {
+        // With EMA, need more samples to converge to 600ms
+        for _ in 0..50 {
             metrics.record_success(0, Duration::from_millis(600));
         }
         
@@ -366,14 +418,69 @@ mod tests {
             min_samples: 1,
             cooldown: Duration::from_secs(60),
         };
-        let metrics = Arc::new(MetricsCollector::new(2));
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
         let engine = DecisionEngine::with_config(StrategyType::RoundRobin, thresholds, metrics.clone());
         
-        metrics.record_success(0, Duration::from_millis(1));
-        metrics.record_success(1, Duration::from_millis(1));
+        // With EMA and threshold=0, need enough samples for convergence
+        // Using higher latency to ensure EMA > 0
+        for _ in 0..50 {
+            metrics.record_success(0, Duration::from_millis(10));
+            metrics.record_success(1, Duration::from_millis(10));
+        }
         
-        // Even 1ms latency should trigger with threshold=0
+        // With 10ms latency and threshold=0ms, should trigger switch
         let decision = engine.evaluate().unwrap();
         assert!(matches!(decision, Decision::SwitchTo { .. }));
+    }
+
+    #[test]
+    fn test_both_conditions_prioritizes_errors() {
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
+        let engine = DecisionEngine::new(StrategyType::LeastConnections, metrics.clone());
+        
+        // Simulate BOTH high latency AND high error rate
+        // Need 50+ samples to meet MIN_SAMPLES threshold
+        for i in 0..2 {
+            for _ in 0..50 {
+                metrics.record_success(i, Duration::from_millis(600)); // High latency
+            }
+            for _ in 0..20 {
+                metrics.record_error(i, Duration::from_millis(600)); // High errors
+            }
+        }
+        
+        let decision = engine.evaluate().unwrap();
+        
+        // Should prioritize error handling over latency optimization
+        assert_eq!(
+            decision,
+            Decision::SwitchTo {
+                strategy: StrategyType::RoundRobin,  // ← Errors take priority
+                reason: SwitchReason::HighErrorRate,
+            }
+        );
+    }
+
+    #[test]
+    fn test_both_conditions_already_in_rr_stays_put() {
+        let metrics = Arc::new(MetricsCollector::new(2).unwrap());
+        // Start with RoundRobin
+        let engine = DecisionEngine::new(StrategyType::RoundRobin, metrics.clone());
+        
+        // Simulate BOTH high latency AND high error rate
+        // Need 50+ samples to meet MIN_SAMPLES threshold
+        for i in 0..2 {
+            for _ in 0..50 {
+                metrics.record_success(i, Duration::from_millis(600)); // High latency
+            }
+            for _ in 0..20 {
+                metrics.record_error(i, Duration::from_millis(600)); // High errors
+            }
+        }
+        
+        let decision = engine.evaluate().unwrap();
+        
+        // Should stay in RR (no oscillation)
+        assert_eq!(decision, Decision::KeepCurrent);
     }
 }

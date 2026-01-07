@@ -149,9 +149,9 @@ echo -e "${CYAN}Worker Configuration Summary:${NC}"
 echo -e "${BLUE}┌─────────────────────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}│${NC} Port  │ Status   │ Delay    │ Error Rate │ Purpose          ${BLUE}│${NC}"
 echo -e "${BLUE}├─────────────────────────────────────────────────────────────────┤${NC}"
-echo -e "${BLUE}│${NC} 3001  │ ${YELLOW}Faulty${NC}   │ 300ms    │ 20%        │ High Error Rate  ${BLUE}│${NC}"
-echo -e "${BLUE}│${NC} 3002  │ ${YELLOW}Faulty${NC}   │ 300ms    │ 15%        │ High Error Rate  ${BLUE}│${NC}"
-echo -e "${BLUE}│${NC} 3003  │ ${GREEN}Fast${NC}     │ 300ms    │ 0%         │ Baseline         ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC} 3001  │ ${YELLOW}Faulty${NC}   │ 100ms    │ 25%        │ High Error Rate  ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC} 3002  │ ${YELLOW}Faulty${NC}   │ 100ms    │ 20%        │ High Error Rate  ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC} 3003  │ ${GREEN}Stable${NC}   │ 100ms    │ 0%         │ Baseline         ${BLUE}│${NC}"
 echo -e "${BLUE}└─────────────────────────────────────────────────────────────────┘${NC}"
 
 echo ""
@@ -203,9 +203,9 @@ COOLDOWN=$(echo "$DECISION_STATUS" | jq -r '.cooldown_seconds // 60')
 echo -e "  ${CYAN}●${NC} Initial Strategy: ${GREEN}$STRATEGY${NC}"
 echo -e "  ${CYAN}●${NC} Adaptive Mode: ${GREEN}$ADAPTIVE_ENABLED${NC}"
 echo -e "  ${CYAN}●${NC} Decision Thresholds:"
-echo -e "      - High Latency: ${YELLOW}>400ms${NC}"
+echo -e "      - High Latency: ${YELLOW}>500ms${NC}"
 echo -e "      - High Error Rate: ${YELLOW}>10%${NC}"
-echo -e "      - Min Samples: ${YELLOW}10 requests${NC}"
+echo -e "      - Min Samples: ${YELLOW}50 requests${NC}"
 echo -e "  ${CYAN}●${NC} Cooldown Period: ${YELLOW}${COOLDOWN} seconds${NC}"
 echo ""
 sleep 5
@@ -271,12 +271,12 @@ echo -e "${YELLOW}Note: Decision engine evaluates every 5 seconds${NC}"
 echo ""
 sleep 3
 
-# Generate traffic in background (150 requests, 0.2s interval = ~30 seconds)
-echo -e "${CYAN}Sending 150 requests (0.2s interval, ~30 seconds)...${NC}"
+# Generate traffic in background (600 requests, 0.1s interval = ~60 seconds)
+echo -e "${CYAN}Sending 600 requests (0.1s interval, ~60 seconds)...${NC}"
 (
-    for i in {1..150}; do
+    for i in {1..600}; do
         curl -s http://localhost:8080/test > /dev/null 2>&1 &
-        sleep 0.2
+        sleep 0.1
     done
 ) &
 TRAFFIC_PID=$!
@@ -292,9 +292,9 @@ echo -e "${MAGENTA}Initial Strategy: ${INITIAL_STRATEGY}${NC}"
 echo ""
 
 STRATEGY_CHANGED=false
-for i in {1..7}; do
+for i in {1..13}; do
     echo -e "${BLUE}───────────────────────────────────────────────────────────────${NC}"
-    echo -e "${CYAN}📊 Metrics Check ${i}/7 (every 5s to align with decision engine)${NC}"
+    echo -e "${CYAN}📊 Metrics Check ${i} (every 5s to align with decision engine)${NC}"
     echo ""
     
     # Get current metrics
