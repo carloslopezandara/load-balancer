@@ -7,7 +7,7 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use hyper::{body::Incoming, service::service_fn, Request, Response};
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo};
-use tokio::{net::TcpListener, task, signal};
+use tokio::{net::TcpListener, task::{self, JoinSet}, signal};
 use tracing::{error, info, warn};
 use color_eyre::Result;
 
@@ -151,7 +151,10 @@ async fn main() -> Result<()> {
         shutdown_coordinator_clone.shutdown();
     });
 
-    // Main server loop
+    // JoinSet to track active connections
+    let mut connections = JoinSet::new();
+
+    // Main server loop with graceful shutdown
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -164,8 +167,9 @@ async fn main() -> Result<()> {
                 };
                 
                 let router = router.clone();
+                let shutdown_coordinator_clone = shutdown_coordinator.clone();
 
-                task::spawn(async move {
+                connections.spawn(async move {
                     let io = TokioIo::new(stream);
                     let service = service_fn(move |req| {
                         let router = router.clone();
@@ -174,25 +178,77 @@ async fn main() -> Result<()> {
                         }
                     });
 
-                    if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
-                        warn!("Connection error from {}: {}", remote_addr, e);
+                    let conn = http1::Builder::new()
+                        .serve_connection(io, service)
+                        .with_upgrades();
+                    
+                    // Pin the connection for graceful_shutdown
+                    let mut conn = std::pin::pin!(conn);
+                    
+                    tokio::select! {
+                        result = conn.as_mut() => {
+                            if let Err(e) = result {
+                                warn!("Connection error from {}: {}", remote_addr, e);
+                            }
+                        }
+                        _ = shutdown_coordinator_clone.wait_for_shutdown() => {
+                            // Graceful shutdown: let connection finish current request
+                            tracing::debug!("Gracefully closing connection from {}", remote_addr);
+                            conn.as_mut().graceful_shutdown();
+                        }
                     }
                 });
             }
             
+            // Clean up completed connections while running
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(e) = result {
+                    warn!("Connection task panicked: {}", e);
+                }
+            }
+            
             _ = shutdown_coordinator.wait_for_shutdown() => {
-                info!("Shutdown signal received, stopping server");
+                info!("Shutdown signal received, stopping acceptance of new connections");
                 break;
             }
         }
     }
 
+    let active_connections = connections.len();
     info!(
         timeout_seconds = config.server.shutdown_timeout_seconds,
-        "Waiting for connections to drain"
+        active_connections = active_connections,
+        "Waiting for active connections to complete"
     );
     
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait for connections with timeout
+    let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_seconds);
+    let shutdown_deadline = tokio::time::Instant::now() + shutdown_timeout;
+    
+    let mut completed = 0;
+    while !connections.is_empty() {
+        tokio::select! {
+            Some(result) = connections.join_next() => {
+                completed += 1;
+                if let Err(e) = result {
+                    warn!("Connection task panicked: {}", e);
+                }
+            }
+            _ = tokio::time::sleep_until(shutdown_deadline) => {
+                let remaining = connections.len();
+                warn!(
+                    completed = completed,
+                    remaining = remaining,
+                    "Shutdown timeout reached, {} connections will be aborted",
+                    remaining
+                );
+                connections.abort_all();
+                break;
+            }
+        }
+    }
+    
+    info!(completed = completed, "All connections closed");
     
     info!("Server shutdown complete");
     Ok(())
